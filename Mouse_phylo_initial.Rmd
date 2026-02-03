@@ -1,0 +1,726 @@
+---
+title: "Mouse_phylo_analysis"
+output: html_document
+date: "2024-06-24"
+---
+
+```{r setup, include=FALSE}
+
+#Need to set these paths for your local setup
+my_working_dir="~/R_work/mouse_phylo_original/"
+gfile=ifelse(Sys.info()['sysname']=="Darwin","~/Mounts/lustre2/reference_files/GRCm38/genome.fa","/lustre/scratch124/casm/team78pipelines/canpipe/live/ref/Mus_musculus/GRCm38/genome.fa")
+
+knitr::opts_knit$set(root.dir = my_working_dir,echo = TRUE)
+
+#----------------------------------
+# Load packages (and install if they are not installed yet)
+#----------------------------------
+cran_packages=c("ggplot2","dplyr","tidyr","gridExtra","ggrepel","RColorBrewer","tibble","ape","dichromat","seqinr","stringr")
+bioconductor_packages=c("GenomicRanges","IRanges","MutationalPatterns","MASS","Rsamtools")
+functionFiles=list.files(pattern=".R","~/R_work/my_functions/",full.names=T)
+temp=sapply(functionFiles,source) #Source functions needed for the script
+
+
+for(package in cran_packages){
+  if(!require(package, character.only=T,quietly = T, warn.conflicts = F)){
+    install.packages(as.character(package),repos = "http://cran.us.r-project.org")
+    library(package, character.only=T,quietly = T, warn.conflicts = F)
+  }
+}
+if (!require("BiocManager", quietly = T, warn.conflicts = F))
+  install.packages("BiocManager")
+
+for(package in bioconductor_packages){
+  if(!require(package, character.only=T,quietly = T, warn.conflicts = F)){
+    BiocManager::install(as.character(package))
+    library(package, character.only=T,quietly = T, warn.conflicts = F)
+  }
+}
+
+#Define custom functions
+plot_96profile=function(df,colnames=c("sampleID","chr","pos","ref","alt"),genomeFile,title=NULL) {
+  require(Rsamtools)
+  require(GenomicRanges)
+  require(IRanges)
+  mutations = data.frame(sampleID=df[[colnames[1]]],
+                         chr=df[[colnames[2]]],
+                         pos=df[[colnames[3]]],
+                         ref=df[[colnames[4]]],
+                         trinuc_ref= "-",
+                         mut=df[[colnames[5]]])
+  mutations_GRange<-GRanges(mutations$chr, IRanges::IRanges(mutations$pos-1, mutations$pos+1))
+  mutations$trinuc_ref = as.vector(Rsamtools::scanFa(file=genomeFile,mutations_GRange ))
+  
+  ntcomp = c(T="A",G="C",C="G",A="T")
+  mutations$sub = paste(mutations$ref,mutations$mut,sep=">")
+  mutations$trinuc_ref_py = mutations$trinuc_ref
+  for (j in 1:nrow(mutations)) {
+    if (mutations$ref[j] %in% c("A","G")) { # Purine base
+      mutations$sub[j] = paste(ntcomp[mutations$ref[j]],ntcomp[mutations$mut[j]],sep=">")
+      mutations$trinuc_ref_py[j] = paste(ntcomp[rev(strsplit(mutations$trinuc_ref[j],split="")[[1]])],collapse="")
+    }
+  }
+  freqs = table(paste(mutations$sub,paste(substr(mutations$trinuc_ref_py,1,1),substr(mutations$trinuc_ref_py,3,3),sep="-"),sep=","))
+  sub_vec = c("C>A","C>G","C>T","T>A","T>C","T>G")
+  ctx_vec = paste(rep(c("A","C","G","T"),each=4),rep(c("A","C","G","T"),times=4),sep="-")
+  full_vec = paste(rep(sub_vec,each=16),rep(ctx_vec,times=6),sep=",")
+  freqs_full = freqs[full_vec]; freqs_full[is.na(freqs_full)] = 0; names(freqs_full) = full_vec
+  
+  xstr = paste(substr(full_vec,5,5), substr(full_vec,1,1), substr(full_vec,7,7), sep="")
+  
+  #pdf("Mut_Sig_fetal_shared.pdf")
+  colvec = rep(c("dodgerblue","black","red","grey70","olivedrab3","plum2"),each=16)
+  y = freqs_full; maxy = max(y)
+  h = barplot(y, las=2, col=colvec, border=NA, ylim=c(0,maxy*1.5), space=1, cex.names=0.6, names.arg=xstr, ylab="Number mutations",main=title)
+  for (j in 1:length(sub_vec)) {
+    xpos = h[c((j-1)*16+1,j*16)]
+    rect(xpos[1]-0.5, maxy*1.2, xpos[2]+0.5, maxy*1.3, border=NA, col=colvec[j*16])
+    text(x=mean(xpos), y=maxy*1.3, pos=3, label=sub_vec[j])
+  }
+}
+
+plot_96profile_mutref=function(mutref_vec,genomeFile,title=NULL) {
+  mut_mat=stringr::str_split(mutref_vec,pattern="-",simplify=T)
+  colnames(mut_mat)=c("chr","pos","ref","alt")
+  df=as.data.frame(mut_mat)%>%
+    mutate(pos=as.integer(pos))%>%
+    mutate(sampleID="this_sample",.before=1)
+  plot_96profile(df,genomeFile = genomeFile,title=title)
+}
+
+vaf_density_plot_final=function(sample,tree,COMB_mats,private_only=F){
+  node <- which(tree$tip.label==sample)
+  if(private_only) {relevant_nodes<-node} else {relevant_nodes<-get_ancestral_nodes(node,tree$edge)}
+  sample_muts <- COMB_mats$mat$mut_ref[COMB_mats$mat$node %in% relevant_nodes]
+  COMB_mats$NR[COMB_mats$NR == 0] <- 1
+  dens <- density((COMB_mats$NV/COMB_mats$NR)[sample_muts,sample])
+  plot(dens,xlim = c(0,1),main=sample)
+  abline(v = dens$x[which.max(dens$y)])
+  text(0.7, max(dens$y) - 0.2, paste("Peak VAF dens=",round(dens$x[which.max(dens$y)], digits = 2)),col="red",cex = 0.7)
+}
+
+binom_mix = function(x,size,nrange=1:3,criterion="BIC",maxit=5000,tol=1e-6){
+  ## Perform the EM algorithm for different numbers of components
+  ## Select best fit using the Bayesian Information Criterion (BIC)
+  ## or the Akaike information criterion (AIC)
+  i=1
+  results = list()
+  BIC_vec = c()
+  AIC_vec = c()
+  
+  for (n in nrange){
+    ## Initialise EM algorithm with values from kmeans clustering
+    init = kmeans(x/size,n)
+    prop_init = init$size/length(x)
+    p_init = init$centers
+    
+    results[[i]] = em.algo(x,size,prop.vector_inits = prop_init,p.vector_inits=p_init,nclust=n,maxit,tol)
+    BIC_vec = c(BIC_vec,results[[i]]$BIC)
+    AIC_vec = c(AIC_vec,results[[i]]$AIC)
+    i=i+1
+  }
+  if (criterion=="BIC"){
+    results[[which.min(BIC_vec)]]$BIC_vec=BIC_vec
+    return(results[[which.min(BIC_vec)]])
+  }
+  if (criterion=="AIC"){
+    return(results[[which.min(AIC_vec)]])
+  }
+}
+
+```
+
+## Load in the data for one individual
+
+```{r load_data}
+knitr::opts_knit$set(root.dir = my_working_dir,echo = TRUE)
+sample_ID="MD7635"
+load(paste0(my_working_dir,"annotated_muts/annotated_mut_set_",sample_ID,"_postMS_reduced_a_j_vaf_post_mix_post_dup"))
+tree=read.tree(paste0(my_working_dir,"tree_files/tree_",sample_ID,"_postMS_reduced_a_j_vaf_post_mix_post_dup.tree"))
+details<-filtered_muts$COMB_mats.tree.build$mat
+plot.phylo(tree,show.tip.label=F,direction="downwards",main=sample_ID)
+
+sample_level_metadata<-readxl::read_excel(paste0(my_working_dir,"sample_metadata/CAMPUOY000001_REUPLOAD_20231116_4xplates_York_Lily_CASM_STS_Sample_MANIFEST_Rec20231206_WithCGPIDs20231219.xlsx"))
+
+cell_type_colours=c("#219EBC","#023047","#FFB703", "#FB8500")
+names(cell_type_colours)<-unique(sample_level_metadata$TISSUE_PHENOTYPE)
+
+tree=plot_tree(tree = tree,cex.label=0,title = sample_ID)
+temp=sapply(tree$tip.label,function(sample_ID) plot_category_tip_point(sample_ID = sample_ID,
+                                                                  tree=tree, cat_df=sample_level_metadata%>%mutate("sample"=INTERNAL_CASM_SAMPLE_NAME),
+                                                                  cols = cell_type_colours,
+                                                                  cat_name="TISSUE_PHENOTYPE"))
+
+#Plot the legend
+legend("topleft", inset=c(.01,.01), title="Sample type",
+       names(cell_type_colours), fill=cell_type_colours, horiz=F, cex=0.7)
+
+sum(filtered_muts$COMB_mats.tree.build$mat$node%in%1:length(tree$tip.label))
+sum(!filtered_muts$COMB_mats.tree.build$mat$node%in%1:length(tree$tip.label))
+```
+## Plot trees with tissue source info
+
+In this plot, branches are coloured by the specific tissue colour if all the descendants are from the same tissue.
+If descendants come from different tissues, the colour is black.
+
+```{r plot_source,fig.width=12, fig.height=5}
+
+#Can choose the 
+plot_sharing_multiple=function(tree,details,matrices,node,cat_df,cat_name="cat",sharing_cols=c("dark green","red","orange","brown","green"),...){  
+  library(dplyr)
+  categories=cat_df%>%filter(sample%in%tree$tip.label)%>%pull(cat_name)%>%unique()
+  if(length(categories)>length(sharing_cols)) {stop("Not enough colours supplied for number of categories")}
+  info=get_edge_info(tree,details,node=node)
+  sample_categories=cat_df%>%filter(sample%in%info$samples)%>%pull(cat_name)
+  if(length(unique(sample_categories))>1) {
+    sharing_info <- "shared"
+  } else {
+    sharing_info <- unique(sample_categories)
+  }
+  sharing_cols=sharing_cols[1:length(categories)]
+  
+  #Add black as the first "shared" category colour
+  if(all(categories%in%names(sharing_cols))) {
+    sharing_cols<-sharing_cols[categories]
+    sharing_cols<-c("black",sharing_cols)
+    names(sharing_cols)[1]="shared"
+  } else {
+    sharing_cols<-c("black",sharing_cols)
+    names(sharing_cols)=c("shared",categories)
+  }
+  
+  if(length(tree$edge.length[tree$edge[,2]==node])>0){
+    arrows(y0=info$yb,y1=info$yt,x0=info$x,x1=info$x,length=0,col=sharing_cols[sharing_info],lend=1,...)
+  }
+}
+
+tree=plot_tree(tree,cex.label=0,plot_axis = T,b_do_not_plot = T)
+
+tree.ultra=make.ultrametric.tree(tree)
+tree.ultra$coords<-NULL
+tree.ultra$edge.length[is.infinite(tree.ultra$edge.length)]<-0
+tree.ultra$edge.length<-tree.ultra$edge.length*mean(get_mut_burden(tree))
+tree.ultra=plot_tree(tree.ultra,cex.label=0,plot_axis = T,title = sample_ID)
+
+#cell_type_colours=c("gray75","#B3CDE3","#CCEBC5", "#9970AB")
+cell_type_colours=c("#219EBC","#023047","#FFB703", "#FB8500")
+names(cell_type_colours)<-unique(sample_level_metadata$TISSUE_PHENOTYPE)
+cell_type_colours<-cell_type_colours[which(names(cell_type_colours)%in%(sample_level_metadata%>%dplyr::filter(INTERNAL_CASM_SAMPLE_NAME%in%tree$tip.label)%>%pull(TISSUE_PHENOTYPE)))]
+
+#Apply the 'plot_sharing_multiple' function to colour the branches
+temp=add_annotation(tree=tree.ultra,
+               annot_function=plot_sharing_multiple,
+               cat_df=sample_level_metadata%>%mutate("sample"=INTERNAL_CASM_SAMPLE_NAME),
+               cat_name="TISSUE_PHENOTYPE",
+               lwd=3,
+               sharing_cols=cell_type_colours)
+
+#Apply the 'plot_category_tip_point' function to create coloured tips according to the tissue
+temp=sapply(tree.ultra$tip.label,function(sample_ID) plot_category_tip_point(sample_ID = sample_ID,
+                                                                  tree=tree.ultra, cat_df=sample_level_metadata%>%mutate("sample"=INTERNAL_CASM_SAMPLE_NAME),
+                                                                  cat_name="TISSUE_PHENOTYPE",
+                                                                  cols=cell_type_colours,
+                                                                  cex=1))
+
+#Plot the legend
+legend("topleft", inset=c(.01,.01), title="Sample type",
+       names(cell_type_colours), fill=cell_type_colours, horiz=F, cex=0.7)
+
+```
+
+## AMOVA (Analysis of molecular variance)
+
+This is a statistical measure of whether samples are more clustered by cell source than you would expect by chance.
+This is done on the ultrametric tree.
+
+```{r AMOVA}
+cellkey<-sample_level_metadata%>%
+  dplyr::mutate("Sample"=INTERNAL_CASM_SAMPLE_NAME)%>%
+  dplyr::filter(Sample%in%tree$tip.label)%>%
+  dplyr::select(Sample,TISSUE_PHENOTYPE)%>%
+  dplyr::rename("Cell_type"=TISSUE_PHENOTYPE)
+
+distmat <- cophenetic(drop.tip(tree.ultra,"Ancestral"))
+
+amovapval.fn(distmat = distmat,
+             groupnames = unique(cellkey$Cell_type),
+             cell_key = cellkey,
+             iterations = 30000,
+             plottitle = paste0(sample_ID,": Phylogenetic clustering by cell source"))
+
+```
+
+## Plot the mutational signatures
+
+Shared mutations are highly confident to be acquired in vivo as they are present in two independent sorted colonies. 
+Private mutations may - in theory - be a combination of in vivo acquired and in vitro acquired mutations. 
+Looking at the mutational signatures of the two may give a clue as to any differences.
+
+Differences may be due to:
+
+(1) in vitro-acquired mutations that have a different mutational signature \
+(2) differences in in vivo mutational process between mutations acquired early in embryogenesis (these are more likely to be shared) and those acquired later (these are likely to be private)
+
+For reasons explained later, in this case, the differences are likely due to in vitro-acquired mutations in this case.
+
+```{r mutational_signatures, eval=FALSE}
+par(mfrow=c(2,1))
+plot_96profile(df = details%>%mutate(sampleID=sample_ID)%>%filter(node%in%1:length(tree$tip.label)),colnames = c("sampleID","Chrom","Pos","Ref","Alt"),genomeFile = gfile,title="Private mutations")
+plot_96profile(df = details%>%mutate(sampleID=sample_ID)%>%filter(!node%in%1:length(tree$tip.label)),colnames = c("sampleID","Chrom","Pos","Ref","Alt"),genomeFile = gfile, title="Shared mutations")
+
+```
+
+## Look at the VAF density plots of the private mutations in a few individual samples
+
+This chooses the first 16 tips of the tree and looks at the VAF density plots of the private mutations
+
+```{r VAF_plots, echo=FALSE,fig.height=12,fig.width=12}
+par(mfrow=c(4,4))
+temp=sapply(1:16,function(i) vaf_density_plot_final(tree$tip.label[i],tree,filtered_muts$COMB_mats.tree.build,private_only = T))
+```
+
+## Review the VAF histograms of all private mutations from all samples
+
+What is the overall story here?  What proportion of private mutations are in fact subclonal or artefactual?
+
+```{r VAF_plots_private}
+COMB_mats=filtered_muts$COMB_mats.tree.build
+
+#Concatentate all variant read counts (of private mutations) into single vector
+all_NV<-lapply(head(tree$tip.label,-1),function(sample) {
+  node <- which(tree$tip.label==sample)
+  sample_muts <- COMB_mats$mat$mut_ref[COMB_mats$mat$node %in% node]
+  COMB_mats$NR[COMB_mats$NR == 0] <- 1
+  return(COMB_mats$NV[sample_muts,sample])
+})%>%unlist()
+
+#Concatentate all depth counts into single vector
+all_NR<-lapply(head(tree$tip.label,-1),function(Sample) {
+  node <- which(tree$tip.label==Sample)
+  sample_muts <- COMB_mats$mat$mut_ref[COMB_mats$mat$node %in% node]
+  COMB_mats$NR[COMB_mats$NR == 0] <- 1
+  sample_NR=COMB_mats$NR[sample_muts,Sample]
+  names(sample_NR)<-sample_muts
+  return(sample_NR)
+})%>%unlist()
+
+#Plot as a density map
+dens <- density(all_NV[all_NR>20]/all_NR[all_NR>20])
+plot(dens,xlim = c(0,1),main=paste0(sample_ID,": all high depth private mutations"))
+abline(v = dens$x[which.max(dens$y)])
+text(0.7, max(dens$y) - 0.2, paste("Peak VAF dens=",round(dens$x[which.max(dens$y)], digits = 2)),col="red",cex = 0.7)
+
+```
+
+
+### Now apply a binomial mixture model to the higher depth mutations
+
+This separates the counts into those that are likely clonal (i.e. from a peak with VAF ~0.5)
+and those that are likely sub-clonal (i.e. those with a peak VAF ~0.25 -0.33).
+
+This is done only with the higher depth mutations where the underlying true clonal fractions can be inferred with greater confidence
+
+This shows that private mutations that were most likely clonal had a more SBS1-like mutational signature than those that were most likely sub-clonal. It also showed that the likely sub-clonal mutations made-up  ~60% of private mutations.
+
+```{r binom_mix_model}
+depth_cutoff=20
+total<-sum(all_NR>depth_cutoff)
+print(total)
+set.seed(15)
+model.out=binom_mix(x=all_NV[all_NR>depth_cutoff],size=all_NR[all_NR>depth_cutoff],nrange=1:4)
+
+clonal_clusters=which.min(abs(model.out$p-0.5))
+  
+if(any(model.out$p>model.out$p[clonal_clusters])) {
+    clonal_clusters<-c(clonal_clusters,which(model.out$p>model.out$p[clonal_clusters]))
+}
+
+if(any(model.out$p<model.out$p[clonal_clusters[1]])) {
+  subclonal_clusters=which(model.out$p<model.out$p[clonal_clusters[1]])
+}
+
+clonal_mut_refs=names(all_NR)[all_NR>depth_cutoff][which(model.out$Which_cluster%in%clonal_clusters)]
+subclonal_mut_refs=names(all_NR)[all_NR>depth_cutoff][which(model.out$Which_cluster%in%subclonal_clusters)]
+
+print(paste(length(clonal_mut_refs),"mutations of",total,"are likely clonal"))
+print(paste(length(subclonal_mut_refs),"mutations of",total,"are likely sub-clonal"))
+
+#Given this what are the likely number of true muts amongst all mutations
+nclonal<-round(length(all_NR) * length(clonal_mut_refs)/total)
+nsubclonal<-round(length(all_NR) * length(subclonal_mut_refs)/total)
+
+plot_signatures=F
+if(plot_signatures) {
+  plot_96profile_mutref(clonal_mut_refs,genomeFile = gfile,title="Clonal mutations")
+  plot_96profile_mutref(subclonal_mut_refs,genomeFile = gfile,title="Probable sub-clonal mutations")
+}
+```
+
+### Try applying the binomial mixture model to private mutations from each sample individually
+
+The challenge here is that there may not be enough mutations in many cases. But lets see how it performs.
+
+```{r branch_level_clonality_analysis}
+
+all_individual_binom_mix<-lapply(head(tree$tip.label,-1),function(sample) {
+  node <- which(tree$tip.label==sample)
+  sample_muts <- COMB_mats$mat$mut_ref[COMB_mats$mat$node %in% node]
+  COMB_mats$NR[COMB_mats$NR == 0] <- 1
+  sample_NV=COMB_mats$NV[sample_muts,sample]
+  sample_NR=COMB_mats$NR[sample_muts,sample]
+  
+  plot=F
+  if(plot) {
+    dens <- density(sample_NV/sample_NR)
+    plot(dens,xlim = c(0,1),main=paste0(sample,": all private mutations"))
+    abline(v = dens$x[which.max(dens$y)])
+    text(0.7, max(dens$y) - 0.2, paste("Peak VAF dens=",round(dens$x[which.max(dens$y)], digits = 2)),col="red",cex = 0.7)
+  }
+  
+
+  model.out=binom_mix(x=sample_NV,size=sample_NR,nrange=1:4)
+  
+  clonal_clusters=which.min(abs(model.out$p-0.5))
+  
+  if(any(model.out$p>model.out$p[clonal_clusters])) {
+    clonal_clusters<-c(clonal_clusters,which(model.out$p>model.out$p[clonal_clusters]))
+  }
+  
+  if(clonal_clusters[1]==which.min(model.out$p)) {
+    subclonal_cluster<-NULL
+    subclonal_mut_refs<-NULL
+  } else {
+    subclonal_cluster=which.min(model.out$p)
+    subclonal_mut_refs=sample_muts[which(model.out$Which_cluster==subclonal_cluster)]
+  }
+  
+  clonal_mut_refs=sample_muts[which(model.out$Which_cluster%in%clonal_clusters)]
+  return(list(clonal_mut_refs=clonal_mut_refs,
+              subclonal_mut_refs=subclonal_mut_refs))
+
+})
+
+#This classifies the majority as likely clonal - but not sure I trust this as individually many of the 'clonal' peaks are well below 0.5
+all_clonal_muts<-unlist(lapply(all_individual_binom_mix,function(list) {return(list$clonal_mut_refs)}))
+all_sub_clonal_muts<-unlist(lapply(all_individual_binom_mix,function(list) {return(list$subclonal_mut_refs)}))
+
+#Alternatively use a Bayesian approach to classify individual mutations
+#1. Take the clonal vs subclonal proportions from the high coverage muts as the prior likelihoods
+#.  i.e. clonal proportion = 1545/3893 for MD7634
+
+clonal_prob_prior=length(clonal_mut_refs)/total
+subclonal_prob_prior=length(subclonal_mut_refs)/total
+
+decisions_df<-lapply(1:length(all_NR),function(i) {
+  clonal_prob=clonal_prob_prior*dbinom(x=all_NV[i],size=all_NR[i],prob=0.5) #The binomial prob for a clonal mutation
+  subclonal_prob=subclonal_prob_prior*dbinom(x=all_NV[i],size=all_NR[i],prob=0.33) #The approximate prob for the subclonal mutations is 0.33 according to the binomial mixture model
+  
+  clonal_prob_norm=clonal_prob/(clonal_prob+subclonal_prob)
+  sub_prob_norm=subclonal_prob/(clonal_prob+subclonal_prob)
+  data.frame(mut_ref=names(all_NR)[i],
+             clonal_prob=clonal_prob_norm,
+             subclonal_prob=sub_prob_norm,
+             decision=ifelse(clonal_prob>subclonal_prob,"clonal","sub-clonal"))
+})%>%dplyr::bind_rows()
+
+decisions_df$sample<-sapply(decisions_df$mut_ref,function(mut) {
+  mut_node<-COMB_mats$mat%>%filter(mut_ref==mut)%>%pull(node)
+  return(tree$tip.label[mut_node])
+})
+
+table(decisions_df$decision)
+```
+
+### Using these corrected mutation burdens
+
+```{r private_branch_correction}
+correction_factor<-sapply(head(tree$tip.label,-1),function(sampleID) {
+  decisions_df%>%filter(sample==sampleID)%>%
+    summarise(prop_clonal=sum(decision=="clonal")/nrow(.))%>%unlist()
+})
+uniform_correction_factor<-rep(length(clonal_mut_refs)/total,length(correction_factor))
+names(correction_factor)<-names(uniform_correction_factor)<-head(tree$tip.label,-1)
+
+#Choose the method to correct the private branch lengths
+correction_method="sample-specific" #other option is "uniform"
+
+tree.corrected<-tree
+tree.corrected$edge.length<-sapply(tree$edge[,2],function(node) {
+  original_edge_length<-tree$edge.length[tree$edge[,2]==node]
+  if(!node %in% 1:length(tree$tip.label)) {
+    return(original_edge_length)
+  } else {
+    sampleID<-tree$tip.label[node]
+    if(sampleID=="Ancestral") {
+      return(0)
+    } else {
+      if(correction_method=="sample_specific") {
+        new_edge_length<-original_edge_length*correction_factor[sampleID]
+      } else if(correction_method=="uniform") {
+        new_edge_length<-original_edge_length*uniform_correction_factor[sampleID]
+      }
+      return(new_edge_length)
+    }
+  }
+})
+
+#Plot the tree with the corrected burdens
+tree.corrected$coords<-NULL
+tree.corrected=plot_tree(tree = tree.corrected,cex.label=0,title = sample_ID)
+temp=sapply(tree.corrected$tip.label,function(sample_ID) plot_category_tip_point(sample_ID = sample_ID,
+                                                                  tree=tree.corrected,
+                                                                  cat_df=sample_level_metadata%>%mutate("sample"=INTERNAL_CASM_SAMPLE_NAME),
+                                                                  cols = cell_type_colours,
+                                                                  cat_name="TISSUE_PHENOTYPE"))
+
+#Plot the legend
+legend("topleft", inset=c(.01,.01), title="Sample type",
+       names(cell_type_colours), fill=cell_type_colours, horiz=F, cex=0.7)
+
+## From this, look at the mutation burdens
+#Create a dataframe including burden, sample name and tissue type
+mut_burden_df<-data.frame(sampleID=tree.corrected$tip.label,mut_burden=get_mut_burden(tree.corrected))%>%
+  filter(!sampleID=="Ancestral")%>%
+  left_join(sample_level_metadata,by=c("sampleID"="INTERNAL_CASM_SAMPLE_NAME"))
+
+
+#Overall mean mutation burden
+print(paste("Mean burden is",mean(mut_burden_df$mut_burden)))
+print(paste("The standard error of the mean is:",sd(mut_burden_df$mut_burden)/sqrt(nrow(mut_burden_df))))
+
+#Summarise mean burdens per tissue of origin
+mut_burden_df%>%
+  group_by(TISSUE_PHENOTYPE)%>%
+  summarise(n_samples=n(),mean_burden=mean(mut_burden),median_burden=median(mut_burden))%>%
+  print()
+
+#Plot a histogram of the burdens, separated by tissue type
+mut_burden_df%>%
+  ggplot(aes(x=mut_burden,fill=TISSUE_PHENOTYPE))+
+  geom_histogram(col="black",linewidth=0.2)+
+  scale_fill_manual(values=cell_type_colours)+
+  theme_classic()+
+  scale_x_continuous(limits=c(0,160))+
+  labs(fill="Tissue",x="Mutation burden",title = sample_ID)
+
+```
+
+### Make a new ultrametric tree with the corrected mutation burdens
+
+```{r corrected_ultrametric_tree}
+tree.corrected.ultra=make.ultrametric.tree(tree.corrected)
+tree.corrected.ultra$coords<-NULL
+tree.corrected.ultra$edge.length[is.infinite(tree.corrected.ultra$edge.length)]<-0
+tree.corrected.ultra$edge.length<-tree.corrected.ultra$edge.length*mean(get_mut_burden(tree.corrected))
+tree.corrected.ultra=plot_tree(tree.corrected.ultra,cex.label=0,plot_axis = T,title = sample_ID)
+
+#Apply the 'plot_sharing_multiple' function to colour the branches
+temp=add_annotation(tree=tree.corrected.ultra,
+               annot_function=plot_sharing_multiple,
+               cat_df=sample_level_metadata%>%mutate("sample"=INTERNAL_CASM_SAMPLE_NAME),
+               cat_name="TISSUE_PHENOTYPE",
+               lwd=2,
+               sharing_cols=cell_type_colours)
+
+#Apply the 'plot_category_tip_point' function to create coloured tips according to the tissue
+temp=sapply(tree.corrected.ultra$tip.label,function(sample_ID) plot_category_tip_point(sample_ID = sample_ID,
+                                                                  tree=tree.corrected.ultra, cat_df=sample_level_metadata%>%mutate("sample"=INTERNAL_CASM_SAMPLE_NAME),
+                                                                  cat_name="TISSUE_PHENOTYPE",
+                                                                  cols=cell_type_colours,
+                                                                  cex=1))
+
+#Plot the legend
+legend("topleft", inset=c(.01,.01), title="Sample type",
+       names(cell_type_colours), fill=cell_type_colours, horiz=F, cex=0.7)
+
+#Repeat the AMOVA with this version of the tree, though
+cellkey<-sample_level_metadata%>%
+  dplyr::mutate("Sample"=INTERNAL_CASM_SAMPLE_NAME)%>%
+  dplyr::filter(Sample%in%tree.corrected.ultra$tip.label)%>%
+  dplyr::select(Sample,TISSUE_PHENOTYPE)%>%
+  dplyr::rename("Cell_type"=TISSUE_PHENOTYPE)
+
+distmat <- cophenetic(drop.tip(tree.corrected.ultra,"Ancestral"))
+
+amovapval.fn(distmat = distmat,
+             groupnames = unique(cellkey$Cell_type),
+             cell_key = cellkey,
+             iterations = 30000,
+             plottitle = paste0(sample_ID,": Phylogenetic clustering by cell source:\ncorrected ultrametric tree"))
+
+```
+
+
+## Baitset design
+
+The following code chunks were used to explore mutation sets to include in the baitset for targeted sequencing.
+
+### Option 1: all mutations
+Create a csv file of all mutations called in either mouse.
+
+```{r mutlist1, eval=TRUE}
+knitr::opts_knit$set(root.dir = my_working_dir)
+sample_IDs=c("MD7634","MD7635")
+all.muts<-lapply(sample_IDs, function(sample_ID) {
+  load(paste0("annotated_muts/annotated_mut_set_",sample_ID,"_postMS_reduced_a_j_vaf_post_mix_post_dup"))
+  return(filtered_muts$COMB_mats.tree.build$mat)
+})
+
+all.trees<-lapply(sample_IDs, function(sample_ID) {read.tree(paste0(my_working_dir,"tree_files/tree_",sample_ID,"_postMS_reduced_a_j_vaf_post_mix_post_dup.tree"))})
+names(all.muts)<-names(all.trees)<-sample_IDs
+
+
+rewrite=F
+if(rewrite) {
+  
+  #Write file of all the mutations
+  dplyr::bind_rows(all.muts)%>%
+  mutate(Start=Pos-1,Stop=Pos,tiling="1X")%>%
+  dplyr::select(Chrom,Start,Stop,tiling)%>%
+  readr::write_csv(file="mouse_phylo_all_muts.csv")
+
+}
+
+
+```
+
+### Option 2: Shared mutations + likely clonal mutations + 10 x complete mutation sets
+Create a csv file of more selected mutations from both mice.
+These includes:
+1) All shared mutations
+2) Private mutations identified as most likely to be clonal (those with a VAF>0.45 and with depth > 15X)
+3) All private mutations from a selected subset of samples (15 in the end)
+
+```{r mutlist2,eval=FALSE}
+knitr::opts_knit$set(root.dir = my_working_dir,echo = TRUE)
+
+reselect_tips=F
+
+if(!reselect_tips) {
+  selected_colony_df<-readr::read_csv("selected_tips.csv")
+  
+} else {
+
+  
+  #Write dataframe of the selected colonies for resequencing
+selected_colony_df<-dplyr::bind_rows(all.muts)%>%
+  filter(selected_tip)%>%
+  dplyr::select(sample_ID,node)%>%
+  filter(!duplicated(.))%>%
+  arrange(sample_ID,node)
+
+selected_colony_df$colony_ID<-sapply(1:nrow(selected_colony_df),function(i) {all.trees[[selected_colony_df$sample_ID[i]]]$tip.label[selected_colony_df$node[i]]})
+
+readr::write_csv(x = selected_colony_df,file="selected_tips.csv")
+}
+
+all.muts<-lapply(sample_IDs, function(this_sample_ID) {
+  load(paste0(my_working_dir,"annotated_muts/annotated_mut_set_",this_sample_ID,"_postMS_reduced_a_j_vaf_post_mix_post_dup"))
+  details<-filtered_muts$COMB_mats.tree.build$mat
+  tree<-all.trees[[this_sample_ID]]
+  COMB_mats=filtered_muts$COMB_mats.tree.build
+  COMB_mats$NR[COMB_mats$NR == 0] <- 1
+  
+  details<-details%>%mutate(sample_ID=this_sample_ID,.before=1)
+  
+  #Add this info to the details matrix (this is the variant and depth counts within samples that should be positive)
+  details$NV=sapply(1:nrow(details),function(i) {
+    Samples=getTips(tree = tree,node = details$node[i])
+    return(sum(COMB_mats$NV[details$mut_ref[i],Samples]))
+  })
+  details$NR=sapply(1:nrow(details),function(i) {
+    Samples=getTips(tree = tree,node = details$node[i])
+    return(sum(COMB_mats$NR[details$mut_ref[i],Samples]))
+  })
+  
+  #Also chose 15 samples for which to do ALL mutations - to get a sense of the true specificity
+  n_colonies_per_mouse=15
+  set.seed(41)
+  selected_tips<-selected_colony_df%>%filter(sample_ID==this_sample_ID)%>%pull(node)
+  
+  details$shared<-ifelse(details$node%in%1:length(tree$tip.label),F,T)
+  details$selected_tip<-ifelse(details$node%in%selected_tips,T,F)
+
+  return(details)
+})
+
+##Write csv of just the selected mutations
+#Includes: (1) All shared mutations, (2) All private mutations from 5 randomly selected branches per tree, (3) Private mutations with VAF>0.45 and depth>15X.
+
+# dplyr::bind_rows(all.muts)%>%
+#   mutate(vaf=NV/NR)%>%
+#   filter(shared|selected_tip|(vaf>0.45 & NR>15))%>%
+#   mutate(Start=Pos-1,Stop=Pos,tiling="1X")%>%
+#   dplyr::select(Chrom,Start,Stop,tiling)%>%
+#   readr::write_csv(file="mouse_phylo_reduced_muts.csv")
+
+
+```
+
+
+## Check the bait set for which mutations are covered in each tree
+
+Read in the baitset probe info from the TWIST design summary files
+Find overlaps between the probes and the mutations and use these to create a new field: 'covered_final'.
+Plot the trees to show the covered mutations
+
+```{r baitset_check}
+#----FINAL CHECK FOR WHICH MUTATIONS ARE COVERED (after resubmitting final designs)------------------------------
+
+baitset_file=paste0(my_working_dir,"baitset_design/Sanger_Mouse_phylo_REDUCED_v2_TE-99621817_mm10/merged_probe_file_shareable_Sanger_Mouse_phylo_REDUCED_v2_TE-99621817_mm10_low.bed")
+cat_bed=read.delim(baitset_file,header = F,col.names = c("Chr","Start","End","Probe_ID"))
+cat_bed$Chr<-gsub("chr","",cat_bed$Chr)
+covered_regions_GR<-GenomicRanges::makeGRangesFromDataFrame(cat_bed,seqnames.field = "Chr",start.field = "Start",end.field = "End")
+
+all.muts<-lapply(all.muts,function(details) {
+  details$covered_final=0
+  
+  #Intersect each details coordinates with the final covered regions
+  details_GR<-GenomicRanges::makeGRangesFromDataFrame(details,seqnames.field = "Chrom",start.field="Pos",end.field = "Pos")
+  overlaps<-GenomicRanges::findOverlaps(covered_regions_GR,details_GR)
+  details$covered_final[overlaps@to] <- 1 #Record that each mutation at that coordinate is covered by the final baitset
+  return(details)
+})
+
+#Write bed file of the covered indels and SNVs
+dplyr::bind_rows(all.muts)%>%
+  filter(covered_final==1 & Mut_type=="SNV")%>%
+  dplyr::select(Chrom,Pos,Ref,Alt)%>%
+  arrange(Chrom,Pos)%>%
+  readr::write_delim(file="baitset_SNVs.bed",delim = "\t",col_names = F)
+
+dplyr::bind_rows(all.muts)%>%
+  filter(covered_final==1 & Mut_type=="INDEL")%>%
+  dplyr::select(Chrom,Pos,Ref,Alt)%>%
+  arrange(Chrom,Pos)%>%
+  readr::write_delim(file="baitset_INDELs.bed",delim = "\t",col_names = F)
+
+#Plot the complete trees
+# Can see the mutations from the 15selected tips
+temp=Map(details=all.muts,tree=all.trees,SampleID=names(all.trees),function(details,tree,SampleID){
+  details$is.in.baitset <- details$covered_final == 1
+  #tree=squash_tree(tree,cut_off=15)
+  tree=plot_tree(tree, cex.label = 0,title = paste0(SampleID,": covered mutations (complete tree)"))
+  add_annotation(tree=tree,
+                 details=details,
+                 list(),
+                 annot_function=function(tree,details,matrices,node) {
+                   add_binary_proportion(tree,details,matrices,node,bfield = "is.in.baitset",lwd = 1.5)
+                 }
+  )
+})
+
+temp=Map(details=all.muts,tree=all.trees,SampleID=names(all.trees),function(details,tree,SampleID){
+  details$is.in.baitset <- details$covered_final == 1
+  tree=squash_tree(tree,cut_off=15)
+  tree=plot_tree(tree, cex.label = 0,title = paste0(SampleID,": covered mutations (cut tree)"))
+  add_annotation(tree=tree,
+                 details=details,
+                 list(),
+                 annot_function=function(tree,details,matrices,node) {
+                   add_binary_proportion(tree,details,matrices,node,bfield = "is.in.baitset",lwd = 1.5)
+                 }
+  )
+})
+
+```

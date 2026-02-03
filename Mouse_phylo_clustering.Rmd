@@ -1,0 +1,335 @@
+---
+title: "Mouse_phylo_clustering"
+author: "Mike Spencer Chapman"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+#Need to set these paths for your local setup
+my_working_dir="~/R_work/mouse_phylo_original/"
+gfile=ifelse(Sys.info()['sysname']=="Darwin","~/Mounts/lustre2/reference_files/GRCm38/genome.fa","/lustre/scratch124/casm/team78pipelines/canpipe/live/ref/Mus_musculus/GRCm38/genome.fa")
+plots_dir=paste0(my_working_dir,"plots/")
+
+knitr::opts_knit$set(root.dir = my_working_dir,echo = TRUE)
+
+#----------------------------------
+# Load packages (and install if they are not installed yet)
+#----------------------------------
+cran_packages=c("ggplot2","dplyr","tidyr","gridExtra","ggrepel","RColorBrewer","tibble","ape","dichromat","seqinr","stringr")
+bioconductor_packages=c("GenomicRanges","IRanges","MutationalPatterns","MASS","Rsamtools")
+functionFiles=list.files(pattern=".R","~/R_work/my_functions/",full.names=T)
+temp=sapply(functionFiles,source) #Source functions needed for the script
+
+
+for(package in cran_packages){
+  if(!require(package, character.only=T,quietly = T, warn.conflicts = F)){
+    install.packages(as.character(package),repos = "http://cran.us.r-project.org")
+    library(package, character.only=T,quietly = T, warn.conflicts = F)
+  }
+}
+if (!require("BiocManager", quietly = T, warn.conflicts = F))
+  install.packages("BiocManager")
+
+for(package in bioconductor_packages){
+  if(!require(package, character.only=T,quietly = T, warn.conflicts = F)){
+    BiocManager::install(as.character(package))
+    library(package, character.only=T,quietly = T, warn.conflicts = F)
+  }
+}
+
+#Define custom functions
+plot_96profile=function(df,colnames=c("sampleID","chr","pos","ref","alt"),genomeFile,title=NULL) {
+  require(Rsamtools)
+  require(GenomicRanges)
+  require(IRanges)
+  mutations = data.frame(sampleID=df[[colnames[1]]],
+                         chr=df[[colnames[2]]],
+                         pos=df[[colnames[3]]],
+                         ref=df[[colnames[4]]],
+                         trinuc_ref= "-",
+                         mut=df[[colnames[5]]])
+  mutations_GRange<-GRanges(mutations$chr, IRanges::IRanges(mutations$pos-1, mutations$pos+1))
+  mutations$trinuc_ref = as.vector(Rsamtools::scanFa(file=genomeFile,mutations_GRange ))
+  
+  ntcomp = c(T="A",G="C",C="G",A="T")
+  mutations$sub = paste(mutations$ref,mutations$mut,sep=">")
+  mutations$trinuc_ref_py = mutations$trinuc_ref
+  for (j in 1:nrow(mutations)) {
+    if (mutations$ref[j] %in% c("A","G")) { # Purine base
+      mutations$sub[j] = paste(ntcomp[mutations$ref[j]],ntcomp[mutations$mut[j]],sep=">")
+      mutations$trinuc_ref_py[j] = paste(ntcomp[rev(strsplit(mutations$trinuc_ref[j],split="")[[1]])],collapse="")
+    }
+  }
+  freqs = table(paste(mutations$sub,paste(substr(mutations$trinuc_ref_py,1,1),substr(mutations$trinuc_ref_py,3,3),sep="-"),sep=","))
+  sub_vec = c("C>A","C>G","C>T","T>A","T>C","T>G")
+  ctx_vec = paste(rep(c("A","C","G","T"),each=4),rep(c("A","C","G","T"),times=4),sep="-")
+  full_vec = paste(rep(sub_vec,each=16),rep(ctx_vec,times=6),sep=",")
+  freqs_full = freqs[full_vec]; freqs_full[is.na(freqs_full)] = 0; names(freqs_full) = full_vec
+  
+  xstr = paste(substr(full_vec,5,5), substr(full_vec,1,1), substr(full_vec,7,7), sep="")
+  
+  #pdf("Mut_Sig_fetal_shared.pdf")
+  colvec = rep(c("dodgerblue","black","red","grey70","olivedrab3","plum2"),each=16)
+  y = freqs_full; maxy = max(y)
+  h = barplot(y, las=2, col=colvec, border=NA, ylim=c(0,maxy*1.5), space=1, cex.names=0.6, names.arg=xstr, ylab="Number mutations",main=title)
+  for (j in 1:length(sub_vec)) {
+    xpos = h[c((j-1)*16+1,j*16)]
+    rect(xpos[1]-0.5, maxy*1.2, xpos[2]+0.5, maxy*1.3, border=NA, col=colvec[j*16])
+    text(x=mean(xpos), y=maxy*1.3, pos=3, label=sub_vec[j])
+  }
+}
+
+plot_96profile_mutref=function(mutref_vec,genomeFile,title=NULL) {
+  mut_mat=stringr::str_split(mutref_vec,pattern="-",simplify=T)
+  colnames(mut_mat)=c("chr","pos","ref","alt")
+  df=as.data.frame(mut_mat)%>%
+    mutate(pos=as.integer(pos))%>%
+    mutate(sampleID="this_sample",.before=1)
+  plot_96profile(df,genomeFile = genomeFile,title=title)
+}
+
+vaf_density_plot_final=function(sample,tree,COMB_mats,private_only=F){
+  node <- which(tree$tip.label==sample)
+  if(private_only) {relevant_nodes<-node} else {relevant_nodes<-get_ancestral_nodes(node,tree$edge)}
+  sample_muts <- COMB_mats$mat$mut_ref[COMB_mats$mat$node %in% relevant_nodes]
+  COMB_mats$NR[COMB_mats$NR == 0] <- 1
+  dens <- density((COMB_mats$NV/COMB_mats$NR)[sample_muts,sample])
+  plot(dens,xlim = c(0,1),main=sample)
+  abline(v = dens$x[which.max(dens$y)])
+  text(0.7, max(dens$y) - 0.2, paste("Peak VAF dens=",round(dens$x[which.max(dens$y)], digits = 2)),col="red",cex = 0.7)
+}
+
+binom_mix = function(x,size,nrange=1:3,criterion="BIC",maxit=5000,tol=1e-6){
+  ## Perform the EM algorithm for different numbers of components
+  ## Select best fit using the Bayesian Information Criterion (BIC)
+  ## or the Akaike information criterion (AIC)
+  i=1
+  results = list()
+  BIC_vec = c()
+  AIC_vec = c()
+  
+  for (n in nrange){
+    ## Initialise EM algorithm with values from kmeans clustering
+    init = kmeans(x/size,n)
+    prop_init = init$size/length(x)
+    p_init = init$centers
+    
+    results[[i]] = em.algo(x,size,prop.vector_inits = prop_init,p.vector_inits=p_init,nclust=n,maxit,tol)
+    BIC_vec = c(BIC_vec,results[[i]]$BIC)
+    AIC_vec = c(AIC_vec,results[[i]]$AIC)
+    i=i+1
+  }
+  if (criterion=="BIC"){
+    results[[which.min(BIC_vec)]]$BIC_vec=BIC_vec
+    return(results[[which.min(BIC_vec)]])
+  }
+  if (criterion=="AIC"){
+    return(results[[which.min(AIC_vec)]])
+  }
+}
+
+#Set the basic plotting theme for ggplot2
+my_theme<-theme(text = element_text(family="Helvetica"),
+                axis.text = element_text(size = 5),
+                axis.title = element_text(size=7),
+                legend.text = element_text(size=5),
+                legend.title = element_text(size=7),
+                strip.text = element_text(size=7),
+                legend.spacing = unit(1,"mm"),
+                legend.key.size= unit(5,"mm"))+
+  theme(legend.key.height=unit(3,"mm"),
+        legend.title = element_text(size=8))
+
+```
+
+## Load in the data for one individual
+
+```{r load_data}
+knitr::opts_knit$set(root.dir = my_working_dir,echo = TRUE)
+sample_ID="MD7634"
+load(paste0(my_working_dir,"annotated_muts/annotated_mut_set_",sample_ID,"_postMS_reduced_a_j_vaf_post_mix_post_dup"))
+tree=read.tree(paste0(my_working_dir,"tree_files/tree_",sample_ID,"_postMS_reduced_a_j_vaf_post_mix_post_dup.tree"))
+details<-filtered_muts$COMB_mats.tree.build$mat
+plot.phylo(tree,show.tip.label=F,direction="downwards",main=sample_ID)
+
+sample_level_metadata<-readxl::read_excel(paste0(my_working_dir,"sample_metadata/CAMPUOY000001_REUPLOAD_20231116_4xplates_York_Lily_CASM_STS_Sample_MANIFEST_Rec20231206_WithCGPIDs20231219.xlsx"))
+
+cell_type_colours=c("#219EBC","#023047","#FFB703", "#FB8500")
+names(cell_type_colours)<-unique(sample_level_metadata$TISSUE_PHENOTYPE)
+
+tree=plot_tree(tree = tree,cex.label=0,title = sample_ID)
+temp=sapply(tree$tip.label,function(sample_ID) plot_category_tip_point(sample_ID = sample_ID,
+                                                                  tree=tree, cat_df=sample_level_metadata%>%mutate("sample"=INTERNAL_CASM_SAMPLE_NAME),
+                                                                  cols = cell_type_colours,
+                                                                  cat_name="TISSUE_PHENOTYPE"))
+
+#Plot the legend
+legend("topleft", inset=c(.01,.01), title="Sample type",
+       names(cell_type_colours), fill=cell_type_colours, horiz=F, cex=0.7)
+
+sum(filtered_muts$COMB_mats.tree.build$mat$node%in%1:length(tree$tip.label))
+sum(!filtered_muts$COMB_mats.tree.build$mat$node%in%1:length(tree$tip.label))
+
+#Now plot a "cut" tree at 80 mutations
+tree$coords<-NULL
+tree.squash=plot_tree(tree = squash_tree(tree,cut_off = 90),cex.label=0,title = sample_ID)
+temp=sapply(tree.squash$tip.label,function(sample_ID) plot_category_tip_point(sample_ID = sample_ID,
+                                                                  tree=tree.squash, cat_df=sample_level_metadata%>%mutate("sample"=INTERNAL_CASM_SAMPLE_NAME),
+                                                                  cols = cell_type_colours,
+                                                                  cat_name="TISSUE_PHENOTYPE"))
+
+#Plot the legend
+legend("topleft", inset=c(.01,.01), title="Sample type",
+       names(cell_type_colours), fill=cell_type_colours, horiz=F, cex=0.7)
+
+```
+
+## Plot trees with tissue source info
+
+In this plot, branches are coloured by the specific tissue colour if all the descendants are from the same tissue.
+If descendants come from different tissues, the colour is black.
+
+```{r plot_source,fig.width=12, fig.height=5}
+
+#Can choose the 
+plot_sharing_multiple=function(tree,details,matrices,node,cat_df,cat_name="cat",sharing_cols=c("dark green","red","orange","brown","green"),...){  
+  library(dplyr)
+  categories=cat_df%>%filter(sample%in%tree$tip.label)%>%pull(cat_name)%>%unique()
+  if(length(categories)>length(sharing_cols)) {stop("Not enough colours supplied for number of categories")}
+  info=get_edge_info(tree,details,node=node)
+  sample_categories=cat_df%>%filter(sample%in%info$samples)%>%pull(cat_name)
+  if(length(unique(sample_categories))>1) {
+    sharing_info <- "shared"
+  } else {
+    sharing_info <- unique(sample_categories)
+  }
+  sharing_cols=sharing_cols[1:length(categories)]
+  
+  #Add black as the first "shared" category colour
+  if(all(categories%in%names(sharing_cols))) {
+    sharing_cols<-sharing_cols[categories]
+    sharing_cols<-c("black",sharing_cols)
+    names(sharing_cols)[1]="shared"
+  } else {
+    sharing_cols<-c("black",sharing_cols)
+    names(sharing_cols)=c("shared",categories)
+  }
+  
+  if(length(tree$edge.length[tree$edge[,2]==node])>0){
+    arrows(y0=info$yb,y1=info$yt,x0=info$x,x1=info$x,length=0,col=sharing_cols[sharing_info],lend=1,...)
+  }
+}
+
+tree=plot_tree(tree,cex.label=0,plot_axis = T,b_do_not_plot = T)
+
+tree.ultra=make.ultrametric.tree(tree)
+tree.ultra$coords<-NULL
+tree.ultra$edge.length[is.infinite(tree.ultra$edge.length)]<-0
+tree.ultra$edge.length<-tree.ultra$edge.length*mean(get_mut_burden(tree))
+tree.ultra=plot_tree(tree.ultra,cex.label=0,plot_axis = T,title = sample_ID)
+
+#cell_type_colours=c("gray75","#B3CDE3","#CCEBC5", "#9970AB")
+cell_type_colours=c("#219EBC","#023047","#FFB703", "#FB8500")
+names(cell_type_colours)<-unique(sample_level_metadata$TISSUE_PHENOTYPE)
+cell_type_colours<-cell_type_colours[which(names(cell_type_colours)%in%(sample_level_metadata%>%dplyr::filter(INTERNAL_CASM_SAMPLE_NAME%in%tree$tip.label)%>%pull(TISSUE_PHENOTYPE)))]
+
+#Apply the 'plot_sharing_multiple' function to colour the branches
+temp=add_annotation(tree=tree.ultra,
+               annot_function=plot_sharing_multiple,
+               cat_df=sample_level_metadata%>%mutate("sample"=INTERNAL_CASM_SAMPLE_NAME),
+               cat_name="TISSUE_PHENOTYPE",
+               lwd=3,
+               sharing_cols=cell_type_colours)
+
+#Apply the 'plot_category_tip_point' function to create coloured tips according to the tissue
+temp=sapply(tree.ultra$tip.label,function(sample_ID) plot_category_tip_point(sample_ID = sample_ID,
+                                                                  tree=tree.ultra, cat_df=sample_level_metadata%>%mutate("sample"=INTERNAL_CASM_SAMPLE_NAME),
+                                                                  cat_name="TISSUE_PHENOTYPE",
+                                                                  cols=cell_type_colours,
+                                                                  cex=1))
+
+#Plot the legend
+legend("topleft", inset=c(.01,.01), title="Sample type",
+       names(cell_type_colours), fill=cell_type_colours, horiz=F, cex=0.7)
+
+```
+
+
+```{r}
+# true_root<-get_node_children(node = tree.ultra$edge[1,1],tree=tree.ultra)[which(get_node_children(node = tree.ultra$edge[1,1],tree=tree.ultra)>length(tree.ultra$tip.label))]
+# first_div_branches<-get_node_children(node = true_root,tree=tree.ultra)
+# tree.ultra$edge.length[tree.ultra$edge[,2]%in%first_div_branches]<-2
+
+tree.ultra$coords<-NULL
+tree.ultra=plot_tree(tree.ultra,cex.label=0,plot_axis = T,title = sample_ID)
+
+cell_type_colours=c("#219EBC","#023047","#FFB703", "#FB8500")
+names(cell_type_colours)<-unique(sample_level_metadata$TISSUE_PHENOTYPE)
+cell_type_colours<-cell_type_colours[which(names(cell_type_colours)%in%(sample_level_metadata%>%dplyr::filter(INTERNAL_CASM_SAMPLE_NAME%in%tree$tip.label)%>%pull(TISSUE_PHENOTYPE)))]
+
+#Apply the 'plot_sharing_multiple' function to colour the branches
+temp=add_annotation(tree=tree.ultra,
+               annot_function=plot_sharing_multiple,
+               cat_df=sample_level_metadata%>%mutate("sample"=INTERNAL_CASM_SAMPLE_NAME),
+               cat_name="TISSUE_PHENOTYPE",
+               lwd=3,
+               sharing_cols=cell_type_colours)
+
+#Apply the 'plot_category_tip_point' function to create coloured tips according to the tissue
+temp=sapply(tree.ultra$tip.label,function(sample_ID) plot_category_tip_point(sample_ID = sample_ID,
+                                                                  tree=tree.ultra, cat_df=sample_level_metadata%>%mutate("sample"=INTERNAL_CASM_SAMPLE_NAME),
+                                                                  cat_name="TISSUE_PHENOTYPE",
+                                                                  cols=cell_type_colours,
+                                                                  cex=1))
+
+#Plot the legend
+legend("topleft", inset=c(.01,.01), title="Sample type",
+       names(cell_type_colours), fill=cell_type_colours, horiz=F, cex=0.7)
+
+cutoff_vec<-seq(1,60,1)
+chisq.res<-lapply(cutoff_vec,function(height) {
+  cat(height,sep="\n")
+  clades_df<-get_expanded_clade_nodes(tree=tree.ultra, height_cut_off = height,min_clonal_fraction = 0,min_samples = 1)
+  subclades_list<-lapply(clades_df%>%filter(n_samples>1)%>%pull(nodes),function(node) extract.clade(tree.ultra,node=node))
+  length(subclades_list)
+  
+  clade_compositions<-lapply(subclades_list,function(tree) {
+    clade_samples<-tree$tip.label
+    clade_sample_locations<-sample_level_metadata%>%filter(INTERNAL_CASM_SAMPLE_NAME%in%clade_samples)%>%pull(TISSUE_PHENOTYPE)
+    return(clade_sample_locations)
+    })
+  
+  #Create the anatomy matrix for the chi-squared
+  M<-lapply(clade_compositions,function(vec) as.data.frame(table(vec))%>%
+           tibble::column_to_rownames(var="vec")%>%
+           t()%>%
+           as.data.frame()%>%
+           tibble::remove_rownames())%>%dplyr::bind_rows()%>%
+    tidyr::replace_na(replace = list(Femur=0,Iliac=0,Tibia=0,Spine=0))%>%
+    as.matrix()
+  
+  all_clade_samples<-unlist(lapply(subclades_list,function(tree) {tree$tip.label}))
+  overall_types<-sample_level_metadata%>%filter(INTERNAL_CASM_SAMPLE_NAME%in%all_clade_samples)%>%pull(TISSUE_PHENOTYPE)%>%table()
+  overall_props<-overall_types/sum(overall_types)
+  chisq.test(M,p=overall_props)
+})
+
+chisq_by_moltime_plot<-data.frame(molecular_time=cutoff_vec,
+           chisq.p.value=sapply(chisq.res,function(res) res$p.value))%>%
+  mutate(signif=chisq.p.value<0.05)%>%
+  ggplot(aes(y=molecular_time,x=chisq.p.value,colour = signif))+
+  geom_point(size = 0.7)+
+  theme_classic()+
+  scale_color_manual(values=c("black","#E31A1C"),guide="none")+
+  geom_vline(xintercept=0.05,linetype=2)+
+  scale_x_continuous(breaks=seq(0,1,0.1),limits = c(0,1),position="top")+
+  labs(y="Molecular time cut-off",x=expression(chi^2~"p-value for anatomical clustering"))+
+  scale_y_reverse(breaks = seq(0,max(cutoff_vec),10))+
+  my_theme
+
+ggsave(filename = paste0(plots_dir,sample_ID,"_chisq_by_moltime_plot.pdf"),chisq_by_moltime_plot,width=3,height=2)
+```
+
+
