@@ -1,5 +1,8 @@
 #Mouse targeted sequencing data analysis
 
+# ---------------------------------------------------#
+# Import packages & custom scripts ----
+# ---------------------------------------------------#
 
 library(stringr)
 library(ape)
@@ -9,6 +12,7 @@ library(tidyr)
 library(readr)
 library(dplyr)
 library(ggplot2)
+library(readxl)
 
 my_working_directory = ifelse(Sys.info()["sysname"] == "Darwin","~/R_work/mouse_phylo/","/lustre/scratch126/casm/team154pc/ms56/mouse_phylo/")
 
@@ -102,6 +106,10 @@ aggregate_cols_by_tissue=function(NV,NR) {
   return(list(NV=NV_agg,NR=NR_agg))
 }
 
+# ---------------------------------------------------#
+# Set root directory & import metadata ----
+# ---------------------------------------------------#
+
 root_dir=ifelse(Sys.info()['sysname']=="Darwin","~/R_work/mouse_phylo/targeted/","/lustre/scratch126/casm/team154pc/ms56/mouse_phylo/targeted/")
 
 my_theme<-theme(text = element_text(family="Helvetica"),
@@ -136,13 +144,19 @@ if(Sys.info()['sysname'] == "Darwin"){
   annotated_muts_folder=paste0(my_working_directory,"filtering_runs/annotated_muts")
 }
 
+
+# ---------------------------------------------------#
+# Create named vector to translate WGS/TGS IDs ----
+# ---------------------------------------------------#
+
 #There are two sets of MDIDs as the targeted sequencing samples were mistakenly given new IDs
 Phylo_MDIDs=c("MD7634","MD7635")
 MDIDs=c("MD7816","MD7817")
 names(MDIDs)<-Phylo_MDIDs
 
-all_targeted_res=vector(mode = "list",length = length(MDIDs))
-names(all_targeted_res)<-MDIDs
+# ---------------------------------------------------#
+# Import the annotated mut files & and the trees ----
+# ---------------------------------------------------#
 
 #Set up the all.muts and all.trees objects - if previously run, read in the RDS object, otherwise import the details matrices from the annotated muts objects
 cat("Loading the individual annotated mutation files",sep = "\n")
@@ -160,9 +174,10 @@ all.trees<-lapply(Phylo_MDIDs,function(ID){
 })
 names(all.muts)<-names(all.trees)<-Phylo_MDIDs
 
+# ---------------------------------------------------#
+# Import the allele counter targeted sequencing data ----
+# ---------------------------------------------------#
 
-#TARGETED SEQUENCING ANALYSIS FOR TRANSPLANT
-#Import the allele counter targeted sequencing data
 if(!file.exists(matrices_files)){
   #Import the SNV bedfile and name the columns appropriately
   SNV_mut_refs=read.delim(baitset_SNV_bed_file_path,stringsAsFactors = F,header=F)
@@ -174,7 +189,10 @@ if(!file.exists(matrices_files)){
   matrices<-readRDS(matrices_files)
 }
 
-#Import the cgpVAF targeted sequencing data
+# ---------------------------------------------------#
+# Import the cgpVAF targeted sequencing data ----
+# ---------------------------------------------------#
+
 if(T|!file.exists(matrices_files_cgpVAF)){
   cat("Importing cgpVAF files",sep="\n")
   matrices_cgpvaf=import_cgpvaf_SNV_and_INDEL(SNV_output_file = cgpvaf_SNV_file,INDEL_output_file = cgpvaf_INDEL_file)
@@ -183,6 +201,13 @@ if(T|!file.exists(matrices_files_cgpVAF)){
   cat("Reading in previously saved cgpVAF files",sep="\n")
   matrices_cgpvaf<-readRDS(matrices_files_cgpVAF)
 }
+
+# ---------------------------------------------------#
+# Combine data into complete 'targeted seq res' objects ----
+# ---------------------------------------------------#
+
+all_targeted_res=vector(mode = "list",length = length(MDIDs))
+names(all_targeted_res)<-MDIDs
 
 for(ID in Phylo_MDIDs){
   cat(ID,sep="\n")
@@ -208,7 +233,13 @@ for(ID in Phylo_MDIDs){
   all_targeted_res[[ID]]<-list(details_targ=details_targ,matrices=matrices_ID,smry=(metadata%>%filter(PDID==MDIDs[ID])))
 }
 
-##Now restructure the data in the format for Nick's version of the Gibbs sampler and save for each individual sample
+# ---------------------------------------------------#
+# Restructure the data ----
+# ---------------------------------------------------#
+
+## Nick's version of the Gibbs sampler requires data in a specific format
+## Reforat and save for each individual sample
+
 for(ID in Phylo_MDIDs){
   cat(paste("Starting analysis for",ID),sep="\n")
   details_targ<-all_targeted_res[[ID]]$details_targ
