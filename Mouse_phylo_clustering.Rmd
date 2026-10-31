@@ -1,5 +1,7 @@
 ---
 title: "Mouse_phylo_clustering"
+params:
+  sample_ID: "MD7634"
 author: "Mike Spencer Chapman"
 date: "`r Sys.Date()`"
 output: html_document
@@ -8,16 +10,27 @@ output: html_document
 ```{r setup, include=FALSE}
 
 #Need to set these paths for your local setup
-my_working_dir="~/R_work/mouse_phylo_original/"
-gfile=ifelse(Sys.info()['sysname']=="Darwin","~/Mounts/lustre2/reference_files/GRCm38/genome.fa","/lustre/scratch124/casm/team78pipelines/canpipe/live/ref/Mus_musculus/GRCm38/genome.fa")
+my_working_dir="~/R_work/mouse_phylo/"
+gfile=ifelse(Sys.info()['sysname']=="Darwin","~/Mounts/lustre2/reference_files/GRCm38/genome.fa","/nfs/cancer_ref02/Mus_musculus/GRCm38/genome.fa")
 plots_dir=paste0(my_working_dir,"plots/")
 
-knitr::opts_knit$set(root.dir = my_working_dir,echo = TRUE)
+#Figure files: set resave_plots=FALSE to knit without overwriting the saved PDFs
+resave_plots=TRUE
+dir.create(plots_dir,showWarnings=FALSE,recursive=TRUE)
+save_gg=function(p,name,width,height) if(resave_plots) ggplot2::ggsave(paste0(plots_dir,name,".pdf"),p,width=width,height=height)
+#Base-graphics plots (trees): re-draws the current plot into a PDF; call straight after the plot is finished
+save_base_plot=function(name,width=10,height=5){
+  if(!resave_plots) return(invisible())
+  p=recordPlot(); pdf(paste0(plots_dir,name,".pdf"),width=width,height=height); replayPlot(p); invisible(dev.off())
+}
+
+knitr::opts_knit$set(root.dir = my_working_dir)
+knitr::opts_chunk$set(echo = TRUE)
 
 #----------------------------------
 # Load packages (and install if they are not installed yet)
 #----------------------------------
-cran_packages=c("ggplot2","dplyr","tidyr","gridExtra","ggrepel","RColorBrewer","tibble","ape","dichromat","seqinr","stringr")
+cran_packages=c("ggplot2","dplyr","tidyr","gridExtra","ggrepel","RColorBrewer","tibble","ape","phytools","phangorn","dichromat","seqinr","stringr")
 bioconductor_packages=c("GenomicRanges","IRanges","MutationalPatterns","MASS","Rsamtools")
 functionFiles=list.files(pattern=".R","~/R_work/my_functions/",full.names=T)
 temp=sapply(functionFiles,source) #Source functions needed for the script
@@ -39,7 +52,40 @@ for(package in bioconductor_packages){
   }
 }
 
+#Detection-aware branch-length correction (see burden_correction/README.md)
+source(paste0(my_working_dir,"burden_correction/R/burden_correction.R"))
+
 #Define custom functions
+#AMOVA permutation test (amova.fn / randamova.fn from my_functions): draws the null histogram, optionally saves it to
+#'file', and returns the observed statistic and p-value (amovapval.fn only plots). p = proportion of permutations >= observed.
+#Note: amova.fn's statistic has a ~0.5 baseline, so only the p-value is interpretable.
+amova_test=function(distmat,cell_key,iterations=30000,plottitle="",file=NULL,seed=20261031){
+  groupnames=unique(cell_key$Cell_type)
+  set.seed(seed)
+  obs=amova.fn(distmat=distmat,groupnames=groupnames,cell_key=cell_key)
+  rnd=sapply(1:iterations,function(i) randamova.fn(distmat=distmat,groupnames=groupnames,cell_key=cell_key))
+  p=mean(rnd>=obs)
+  draw=function(){
+    hist(rnd,col="grey",100,main=plottitle,xlab="AMOVA statistic",xlim=range(c(rnd,obs)))
+    abline(v=obs,col="red",lwd=2)
+    legend("topright",legend=paste0("Observed\n p = ",signif(p,digits=2)),lwd=2,col="red",bty="n")
+  }
+  draw()
+  if(!is.null(file)) {pdf(file,width=5,height=4); draw(); dev.off()}
+  data.frame(n_colonies=nrow(distmat),statistic=obs,null_mean=mean(rnd),p_value=p,iterations=iterations)
+}
+#Clades whose branch crosses a given height (from the HSCT analysis scripts)
+get_expanded_clade_nodes=function(tree,height_cut_off=100,min_clonal_fraction=0.02,min_samples=1){
+  nodeheights=nodeHeights(tree)
+  nodes=tree$edge[,2][nodeheights[,1] < height_cut_off &
+                        !nodeheights[,2] < height_cut_off &
+                        sapply(tree$edge[,2],function(node) {length(getTips(tree,node))/length(tree$tip.label)})>min_clonal_fraction &
+                        sapply(tree$edge[,2],function(node) {length(getTips(tree,node))})>=min_samples]
+  data.frame(nodes=nodes,n_samples=sapply(nodes,function(node) {length(getTips(tree,node))}),
+             MRCA_time=sapply(nodes,function(node) {nodeheight(tree,node)}),
+             clonal_fraction=sapply(nodes,function(node) {length(getTips(tree,node))/length(tree$tip.label)}))
+}
+
 plot_96profile=function(df,colnames=c("sampleID","chr","pos","ref","alt"),genomeFile,title=NULL) {
   require(Rsamtools)
   require(GenomicRanges)
@@ -148,7 +194,7 @@ my_theme<-theme(text = element_text(family="Helvetica"),
 
 ```{r load_data}
 knitr::opts_knit$set(root.dir = my_working_dir,echo = TRUE)
-sample_ID="MD7634"
+sample_ID=params$sample_ID #knit for the other mouse with rmarkdown::render(..., params=list(sample_ID="MD7635"))
 load(paste0(my_working_dir,"annotated_muts/annotated_mut_set_",sample_ID,"_postMS_reduced_a_j_vaf_post_mix_post_dup"))
 tree=read.tree(paste0(my_working_dir,"tree_files/tree_",sample_ID,"_postMS_reduced_a_j_vaf_post_mix_post_dup.tree"))
 details<-filtered_muts$COMB_mats.tree.build$mat
@@ -255,13 +301,140 @@ legend("topleft", inset=c(.01,.01), title="Sample type",
        names(cell_type_colours), fill=cell_type_colours, horiz=F, cex=0.7)
 
 ```
+### Correct branch lengths for sensitivity and sub-clonal private mutations
+
+Private mutations include sub-clonal mutations (acquired after the founder cell, VAF ~0.25) and not every clonal mutation is detected. The correction (`burden_correction/`, see its README for the method and a simulation test) accounts for how mutations reach the tree:
+
+1. A private mutation is only on the tree if NV >= 3 and VAF >= 0.2 (tree-building filter), and calls with exactly 3 variant reads are only partly detected. Sub-clonal mutations are therefore lost far more often at low depth, so the clonal/sub-clonal mixture is fitted *conditional on detection* (beta-binomial clonal and sub-clonal components shared across colonies, a clonal weight per colony).
+2. Male X/Y mutations are hemizygous (VAF ~1 at half depth) and are modelled with twice the VAF.
+3. Clonal sensitivity = the pipeline's germline-SNP sensitivity (recovered from the input tree: tip SNV count / tip edge length) x the probability that a clonal mutation passes the VAF filter at that sample's depth.
+4. Corrected private branch = expected number of detected clonal SNVs / clonal sensitivity. Shared branches are rebuilt from raw SNV counts and divided by the probability that at least one descendant sample detects a mutation.
+
+In simulations with known truth this is within +-2% of the true clonal burden (the previous Bayesian hard-call correction underestimated it by 8-27%, depending on depth). The fit is saved in `burden_correction/results/` and reloaded if present.
+
+```{r burden_correction}
+bc_file=paste0(my_working_dir,"burden_correction/results/burden_correction_",sample_ID,".Rds")
+if(file.exists(bc_file)) {
+  bc=readRDS(bc_file)
+} else {
+  bc=correct_branch_lengths(tree=read.tree(paste0(my_working_dir,"tree_files/tree_",sample_ID,"_postMS_reduced_a_j_vaf_post_mix_post_dup.tree")),
+                            COMB_mats=filtered_muts$COMB_mats.tree.build,sex="male")
+}
+
+#Fitted global parameters
+data.frame(clonal_VAF=unname(bc$fit$pc),subclonal_VAF=unname(bc$fit$ps),rho_clonal=bc$fit$rho[1],rho_subclonal=bc$fit$rho[2],
+           detection_NV3=bc$fit$delta[1],detection_NV4=bc$fit$delta[2])%>%signif(3)
+
+#Per-sample: observed private SNVs, clonal weight, sensitivity and corrected burdens
+mut_burden_df<-bc$samples%>%
+  left_join(sample_level_metadata,by=c("sample"="INTERNAL_CASM_SAMPLE_NAME"))%>%
+  dplyr::rename(sampleID=sample,mut_burden=total_burden)
+mut_burden_df%>%dplyr::select(sampleID,TISSUE_PHENOTYPE,n_obs,w_clonal,caller_sensitivity,sensitivity,N_clonal,shared_burden,mut_burden)%>%
+  mutate(across(where(is.numeric),~round(.x,2)))%>%head()
+
+#Plot the tree with the corrected burdens
+tree.corrected<-bc$tree
+tree.corrected=plot_tree(tree = tree.corrected,cex.label=0,title = sample_ID)
+temp=sapply(tree.corrected$tip.label,function(sample_ID) plot_category_tip_point(sample_ID = sample_ID,
+                                                                  tree=tree.corrected,
+                                                                  cat_df=sample_level_metadata%>%mutate("sample"=INTERNAL_CASM_SAMPLE_NAME),
+                                                                  cols = cell_type_colours,
+                                                                  cat_name="TISSUE_PHENOTYPE"))
+
+#Plot the legend
+legend("topleft", inset=c(.01,.01), title="Sample type",
+       names(cell_type_colours), fill=cell_type_colours, horiz=F, cex=0.7)
+save_base_plot(paste0(sample_ID,"_tree_corrected"),width=10,height=5)
+
+## From this, look at the mutation burdens
+#Overall mean mutation burden
+print(paste("Mean burden is",round(mean(mut_burden_df$mut_burden),1)))
+print(paste("The standard error of the mean is:",round(sd(mut_burden_df$mut_burden)/sqrt(nrow(mut_burden_df)),2)))
+
+#Summarise mean burdens per tissue of origin
+mut_burden_df%>%
+  group_by(TISSUE_PHENOTYPE)%>%
+  summarise(n_samples=n(),mean_private_observed=mean(n_obs),mean_private_corrected=mean(N_clonal),
+            mean_burden=mean(mut_burden),median_burden=median(mut_burden))%>%
+  print()
+
+#Observed vs corrected private burdens
+mut_burden_df%>%
+  ggplot(aes(x=n_obs,y=N_clonal,col=TISSUE_PHENOTYPE))+
+  geom_point(size=1)+
+  geom_abline(linetype=2)+
+  scale_color_manual(values=cell_type_colours)+
+  theme_classic()+
+  labs(col="Tissue",x="Observed private SNVs",y="Corrected clonal private burden",title = sample_ID)
+
+#Plot a histogram of the burdens, separated by tissue type
+mut_burden_df%>%
+  ggplot(aes(x=mut_burden,fill=TISSUE_PHENOTYPE))+
+  geom_histogram(col="black",linewidth=0.2)+
+  scale_fill_manual(values=cell_type_colours)+
+  theme_classic()+
+  coord_cartesian(xlim=c(0,200))+
+  labs(fill="Tissue",x="Corrected mutation burden",title = sample_ID)
+
+```
+
+### Make a new ultrametric tree with the corrected mutation burdens
+
+This uses the 'make.ultrametric.tree' function which is an iteratively reweighted means algorithm to scale the total sample heights all to a height of 1. We then rescale them to the mean mutation burden across samples. This gives an ultrametric tree that is still scaled to 'molecular time' (i.e. number of mutations). \
+
+You can then look for phylogenetic clustering by tissue using AMOVA, and for differences in tissue composition between the clades present at successive molecular-time cut-offs (chi-squared test with Monte Carlo p-values).
+
+```{r corrected_ultrametric_tree}
+tree.corrected.ultra=make.ultrametric.tree(tree.corrected)
+tree.corrected.ultra$coords<-NULL
+tree.corrected.ultra$edge.length[is.infinite(tree.corrected.ultra$edge.length)]<-0
+tree.corrected.ultra$edge.length<-tree.corrected.ultra$edge.length*mean(get_mut_burden(tree.corrected))
+tree.corrected.ultra=plot_tree(tree.corrected.ultra,cex.label=0,plot_axis = T,title = sample_ID)
+
+#Apply the 'plot_sharing_multiple' function to colour the branches
+temp=add_annotation(tree=tree.corrected.ultra,
+               annot_function=plot_sharing_multiple,
+               cat_df=sample_level_metadata%>%mutate("sample"=INTERNAL_CASM_SAMPLE_NAME),
+               cat_name="TISSUE_PHENOTYPE",
+               lwd=2,
+               sharing_cols=cell_type_colours)
+
+#Apply the 'plot_category_tip_point' function to create coloured tips according to the tissue
+temp=sapply(tree.corrected.ultra$tip.label,function(sample_ID) plot_category_tip_point(sample_ID = sample_ID,
+                                                                  tree=tree.corrected.ultra, cat_df=sample_level_metadata%>%mutate("sample"=INTERNAL_CASM_SAMPLE_NAME),
+                                                                  cat_name="TISSUE_PHENOTYPE",
+                                                                  cols=cell_type_colours,
+                                                                  cex=1))
+
+#Plot the legend
+legend("topleft", inset=c(.01,.01), title="Sample type",
+       names(cell_type_colours), fill=cell_type_colours, horiz=F, cex=0.7)
+
+#Repeat the AMOVA with this version of the tree, though
+cellkey<-sample_level_metadata%>%
+  dplyr::mutate("Sample"=INTERNAL_CASM_SAMPLE_NAME)%>%
+  dplyr::filter(Sample%in%tree.corrected.ultra$tip.label)%>%
+  dplyr::select(Sample,TISSUE_PHENOTYPE)%>%
+  dplyr::rename("Cell_type"=TISSUE_PHENOTYPE)
+
+distmat <- cophenetic(drop.tip(tree.corrected.ultra,"Ancestral"))
+
+amova_res<-amova_test(distmat = distmat,
+                      cell_key = cellkey,
+                      iterations = 30000,
+                      plottitle = paste0(sample_ID,": Phylogenetic clustering by cell source:\ncorrected ultrametric tree"),
+                      file = if(resave_plots) paste0(plots_dir,sample_ID,"_AMOVA_corrected_tree.pdf") else NULL)
+amova_res
+
+```
 
 
-```{r}
+```{r figure_tree_and_chisq}
 # true_root<-get_node_children(node = tree.ultra$edge[1,1],tree=tree.ultra)[which(get_node_children(node = tree.ultra$edge[1,1],tree=tree.ultra)>length(tree.ultra$tip.label))]
 # first_div_branches<-get_node_children(node = true_root,tree=tree.ultra)
 # tree.ultra$edge.length[tree.ultra$edge[,2]%in%first_div_branches]<-2
 
+tree.ultra<-tree.corrected.ultra
 tree.ultra$coords<-NULL
 tree.ultra=plot_tree(tree.ultra,cex.label=0,plot_axis = T,title = sample_ID)
 
@@ -287,38 +460,35 @@ temp=sapply(tree.ultra$tip.label,function(sample_ID) plot_category_tip_point(sam
 #Plot the legend
 legend("topleft", inset=c(.01,.01), title="Sample type",
        names(cell_type_colours), fill=cell_type_colours, horiz=F, cex=0.7)
+save_base_plot(paste0(sample_ID,"_tree_corrected_ultrametric"),width=10,height=5)
 
+#Clade x tissue contingency test at each molecular-time cut-off: does tissue composition differ between the clades
+#(of >1 sample) crossing that height? Monte Carlo p-values because the tables are sparse; NA if < 2 clades
+set.seed(1)
 cutoff_vec<-seq(1,60,1)
+tissues<-sample_level_metadata%>%filter(INTERNAL_CASM_SAMPLE_NAME%in%tree.ultra$tip.label)%>%pull(TISSUE_PHENOTYPE)%>%unique()
 chisq.res<-lapply(cutoff_vec,function(height) {
-  cat(height,sep="\n")
   clades_df<-get_expanded_clade_nodes(tree=tree.ultra, height_cut_off = height,min_clonal_fraction = 0,min_samples = 1)
-  subclades_list<-lapply(clades_df%>%filter(n_samples>1)%>%pull(nodes),function(node) extract.clade(tree.ultra,node=node))
-  length(subclades_list)
+  clade_nodes<-clades_df%>%filter(n_samples>1)%>%pull(nodes)
+  if(length(clade_nodes)<2) return(list(p.value=NA,n_clades=length(clade_nodes)))
   
-  clade_compositions<-lapply(subclades_list,function(tree) {
-    clade_samples<-tree$tip.label
-    clade_sample_locations<-sample_level_metadata%>%filter(INTERNAL_CASM_SAMPLE_NAME%in%clade_samples)%>%pull(TISSUE_PHENOTYPE)
-    return(clade_sample_locations)
-    })
-  
-  #Create the anatomy matrix for the chi-squared
-  M<-lapply(clade_compositions,function(vec) as.data.frame(table(vec))%>%
-           tibble::column_to_rownames(var="vec")%>%
-           t()%>%
-           as.data.frame()%>%
-           tibble::remove_rownames())%>%dplyr::bind_rows()%>%
-    tidyr::replace_na(replace = list(Femur=0,Iliac=0,Tibia=0,Spine=0))%>%
-    as.matrix()
-  
-  all_clade_samples<-unlist(lapply(subclades_list,function(tree) {tree$tip.label}))
-  overall_types<-sample_level_metadata%>%filter(INTERNAL_CASM_SAMPLE_NAME%in%all_clade_samples)%>%pull(TISSUE_PHENOTYPE)%>%table()
-  overall_props<-overall_types/sum(overall_types)
-  chisq.test(M,p=overall_props)
+  #Create the anatomy matrix (clades x tissues)
+  M<-t(sapply(clade_nodes,function(node) {
+    clade_samples<-getTips(tree.ultra,node)
+    table(factor(sample_level_metadata%>%filter(INTERNAL_CASM_SAMPLE_NAME%in%clade_samples)%>%pull(TISSUE_PHENOTYPE),levels=tissues))
+  }))
+  M<-M[,colSums(M)>0,drop=F]
+  if(ncol(M)<2) return(list(p.value=NA,n_clades=nrow(M)))
+  res<-chisq.test(M,simulate.p.value=TRUE,B=10000)
+  list(p.value=res$p.value,n_clades=nrow(M))
 })
 
-chisq_by_moltime_plot<-data.frame(molecular_time=cutoff_vec,
-           chisq.p.value=sapply(chisq.res,function(res) res$p.value))%>%
-  mutate(signif=chisq.p.value<0.05)%>%
+chisq_df<-data.frame(molecular_time=cutoff_vec,
+                     n_clades=sapply(chisq.res,function(res) res$n_clades),
+                     chisq.p.value=sapply(chisq.res,function(res) res$p.value))%>%
+  mutate(signif=chisq.p.value<0.05)
+#Note: the cut-offs are nested and correlated, and the p-values are not corrected for multiple testing
+chisq_by_moltime_plot<-chisq_df%>%filter(!is.na(chisq.p.value))%>%
   ggplot(aes(y=molecular_time,x=chisq.p.value,colour = signif))+
   geom_point(size = 0.7)+
   theme_classic()+
@@ -328,8 +498,8 @@ chisq_by_moltime_plot<-data.frame(molecular_time=cutoff_vec,
   labs(y="Molecular time cut-off",x=expression(chi^2~"p-value for anatomical clustering"))+
   scale_y_reverse(breaks = seq(0,max(cutoff_vec),10))+
   my_theme
-
-ggsave(filename = paste0(plots_dir,sample_ID,"_chisq_by_moltime_plot.pdf"),chisq_by_moltime_plot,width=3,height=2)
+chisq_by_moltime_plot
+save_gg(chisq_by_moltime_plot,paste0(sample_ID,"_chisq_by_moltime_plot"),width=3,height=2)
 ```
 
 

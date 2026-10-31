@@ -14,23 +14,32 @@ EXP_ID="MD7634" #others are MD7635/4
 ALL_PROJECT_NUMBERS=3357
 INSILICO_NORMAL_ID=MDGRCm38is
 INSILICO_NORMAL_PROJECT=1670
+SPECIES="Mus_musculus"
+GENOME_BUILD=GRCm38
 DONOR_AGE=2
 
 #Reference file paths
-GENOME_FILE=/lustre/scratch124/casm/team78pipelines/canpipe/live/ref/Mus_musculus/GRCm38/genome.fa
-HIGH_DEPTH_REGIONS=/lustre/scratch124/casm/team78pipelines/canpipe/live/ref/Mus_musculus/GRCm38/shared/extremedepth.bed.gz
-IMPORT_NEW_SAMPLES_SCRIPT=/lustre/scratch126/casm/team154pc/ms56/my_programs/import_new_samples_only.R
-CREATE_SPLIT_CONFIG_SCRIPT=/lustre/scratch126/casm/team154pc/ms56/my_programs/create_split_config_ini.R
-MUTATION_PARAMETER_SCRIPT=/lustre/scratch126/casm/team154pc/ms56/my_programs/Mutation_filtering_get_parameters_MOUSE.R
-SENSITIVITY_ANALYSIS_SCRIPT=/lustre/scratch119/casm/team154pc/ms56/my_programs/Sensitivity_analysis_from_SNPs.R
-GENES_TO_ANNOTATE=/lustre/scratch126/casm/team154pc/ms56/reference_files/chip_drivers.txt
-TREE_BUILDING_SCRIPT=
+GENOME_FILE_DIR=/nfs/cancer_ref02/${SPECIES}/${GENOME_BUILD}
+GENOME_FILE=${GENOME_FILE_DIR}/genome.fa
+HIGH_DEPTH_REGIONS=${GENOME_FILE_DIR}/shared/extremedepth.bed.gz
+PROGRAM_FILE_DIR=/nfs/casm/team273jn/ms56/my_programs
+REFERENCE_FILE_DIR=/nfs/casm/team273jn/ms56/reference_files
+
+IMPORT_NEW_SAMPLES_SCRIPT=${PROGRAM_FILE_DIR}/import_new_samples_only.R
+CREATE_SPLIT_CONFIG_SCRIPT=${PROGRAM_FILE_DIR}/create_split_config_ini.R
+MUTATION_PARAMETER_SCRIPT=${PROGRAM_FILE_DIR}/Mutation_filtering_get_parameters_v2.R
+REDUCING_MUTSET_SCRIPT=${PROGRAM_FILE_DIR}/Reducing_mutset_from_MSfilters.R
+FILTER_FOR_BED_FILE_SCRIPT=${PROGRAM_FILE_DIR}/filter_for_bed_file.pl
+SENSITIVITY_ANALYSIS_SCRIPT=${PROGRAM_FILE_DIR}/Sensitivity_analysis_from_SNPs.R
+RUN_LCM_WRAPPER_SCRIPT=${PROGRAM_FILE_DIR}/runlcmfilter.sh
+GENES_TO_ANNOTATE=${REFERENCE_FILE_DIR}/chip_drivers.txt
+TREE_BUILDING_SCRIPT=${PROGRAM_FILE_DIR}/filtering_from_table_mix_remove_MOUSE.R
 
 #Secondary variable
 PD_NUMBERS=$EXP_ID
-STUDY_DIR=/lustre/scratch126/casm/team154pc/ms56/${STUDY_ID}
+STUDY_DIR=/lustre/scratch125/casm/teams/team273/users/ms56/${STUDY_ID}
 MATS_AND_PARAMS_DIR=${STUDY_DIR}/filtering_runs/mats_and_params
-ROOT_DIR=/lustre/scratch126/casm/team154pc/ms56/${STUDY_ID}/${EXP_ID}
+ROOT_DIR=${STUDY_DIR}/${EXP_ID}
 SNV_BEDFILE_NAME=${STUDY_ID}_${EXP_ID}_caveman.bed
 INDEL_BEDFILE_NAME=${STUDY_ID}_${EXP_ID}_pindel.bed
 MS_FILTERED_BEDFILE_NAME=${STUDY_ID}_${EXP_ID}_postMS_SNVs.bed
@@ -40,12 +49,32 @@ RUN_ID_M=${EXP_ID}_m40
 RUN_ID_TB=${RUN_ID_M}_postMS_reduced
 IFS=',' read -r -a PROJECT_ARRAY <<< "$ALL_PROJECT_NUMBERS"
 
-#--------------------Submit LCM filtering jobs-----------------------------
+#--------------------Submit LCM hairpin filtering jobs-----------------------------
 module load openjdk-16.0.2
 module load samtools-1.19/python-3.12.0
 mkdir -p $ROOT_DIR/MS_filters/output_files
 cd $ROOT_DIR/MS_filters
-/lustre/scratch126/casm/team154pc/ms56/my_programs/Submitting_Mathijs_filters_jobs.R -p $ALL_PROJECT_NUMBERS -s $PD_NUMBERS -o $ROOT_DIR/MS_filters/output_files -q long
+mkdir -p log_files
+
+for PROJECT_NUMBER in "${PROJECT_ARRAY[@]}"; do
+    ls /software/SGP/nst_links/live/${PROJECT_NUMBER}/|grep "$EXP_ID">samples_${PROJECT_NUMBER}.txt
+    for v in "${ADDITIONAL_SAMPLES_ARRAY[@]}";do
+        ls /software/SGP/nst_links/live/${PROJECT_NUMBER}/|grep -x "${v}^">>samples_${PROJECT_NUMBER}.txt
+        echo "$v found in project $PROJECT_NUMBER and added to samples list"
+    done
+
+    for SAMPLE_ID in $(cat samples_${PROJECT_NUMBER}.txt); do
+        if [ ! -s $ROOT_DIR/MS_filters/output_files/${SAMPLE_ID}_passed.vcf ]; then
+            echo "Hairpin filtering for ${SAMPLE_ID} not yet completed. Submitting new job."
+            bsub -o $ROOT_DIR/MS_filters/log_files/hairpin.${SAMPLE_ID}.log -e $ROOT_DIR/MS_filters/log_files/hairpin.${SAMPLE_ID}.log \
+                -q normal -G team273 -R 'select[mem>=16000] span[hosts=1] rusage[mem=16000]' \
+                -M16000 -n6 -J hairpin \
+                $RUN_LCM_WRAPPER_SCRIPT /software/SGP/nst_links/live/${PROJECT_NUMBER}/${SAMPLE_ID}/${SAMPLE_ID}.caveman_c.annot.vcf.gz /software/SGP/nst_links/live/${PROJECT_NUMBER}/${SAMPLE_ID}/${SAMPLE_ID}.sample.dupmarked.bam output_files ${SAMPLE_ID} $GENOME_BUILD 3 $ASMD_THRESHOLD
+        else
+            echo "Hairpin filtering for ${SAMPLE_ID} already complete"
+        fi        
+    done
+done
 
 #--------------------SNV analysis-----------------------------
 mkdir -p $ROOT_DIR/caveman_raw/caveman_pileup/output; cd $ROOT_DIR/caveman_raw
@@ -276,7 +305,7 @@ for SAMPLE_ID in $SAMPLES; do
     -M16000 \
     -n1 \
     -J "MS_filt" \
-    /lustre/scratch126/casm/team154pc/ms56/my_programs/LCMfiltering_2024/runlcmfilter.sh /nfs/cancer_ref01/nst_links/live/3357/${SAMPLE_ID}/${SAMPLE_ID}.caveman_c.annot.vcf.gz /nfs/cancer_ref01/nst_links/live/3357/${SAMPLE_ID}/${SAMPLE_ID}.sample.dupmarked.bam output_files/ ${SAMPLE_ID} mm10 3
+    /lustre/scratch126/casm/team154pc/ms56/my_programs/LCMfiltering_2024/runlcmfilter.sh /software/SGP/nst_links/live/3357/${SAMPLE_ID}/${SAMPLE_ID}.caveman_c.annot.vcf.gz /software/SGP/nst_links/live/3357/${SAMPLE_ID}/${SAMPLE_ID}.sample.dupmarked.bam output_files/ ${SAMPLE_ID} mm10 3
 done
 
 

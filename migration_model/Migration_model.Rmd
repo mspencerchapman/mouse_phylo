@@ -1,0 +1,712 @@
+---
+title: "HSC localisation and migration between bones"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+#Need to set these paths for your local setup
+my_working_dir="~/R_work/mouse_phylo/"
+knitr::opts_knit$set(root.dir = my_working_dir)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+suppressMessages({library(ape);library(phytools);library(dplyr);library(tidyr);library(ggplot2);library(patchwork);library(ggridges);library(parallel)})
+functionFiles=list.files(pattern=".R","~/R_work/my_functions/",full.names=T)
+temp=suppressMessages(sapply(functionFiles,source))
+source(paste0(my_working_dir,"migration_model/R/migration_model.R"))
+plots_dir=paste0(my_working_dir,"plots/migration_model/")
+
+#Figure files: set resave_plots=FALSE to knit without overwriting the saved PDFs
+resave_plots=TRUE
+dir.create(plots_dir,showWarnings=FALSE,recursive=TRUE)
+#PDF device that can draw Unicode (χ²) in labels: Quartz on macOS (cairo needs XQuartz there), cairo elsewhere
+unicode_pdf=function(filename,width,height,...) if(Sys.info()[["sysname"]]=="Darwin") grDevices::quartz(file=filename,type="pdf",width=width,height=height) else grDevices::cairo_pdf(filename,width=width,height=height)
+save_gg=function(p,name,width,height) if(resave_plots) ggplot2::ggsave(paste0(plots_dir,name,".pdf"),p,width=width,height=height,device=unicode_pdf)
+#Base-graphics plots (trees): re-draws the current plot into a PDF; call straight after the plot is finished
+save_base_plot=function(name,width=10,height=5){
+  if(!resave_plots) return(invisible())
+  p=recordPlot(); pdf(paste0(plots_dir,name,".pdf"),width=width,height=height); replayPlot(p); invisible(dev.off())
+}
+
+n_cores=max(1,detectCores()-2)
+RNGkind("L'Ecuyer-CMRG"); set.seed(20261030)  #reproducible parallel random streams
+```
+
+## Question
+
+The colony phylogenies cluster by bone, which suggests that HSCs stay "predominantly in the same place". This
+analysis puts a number on that: how often do HSCs move between bones after they first localise to one?
+
+## Model
+
+Time is molecular time (number of mutations) on the corrected ultrametric tree. Branch lengths are corrected for
+sensitivity and sub-clonal mutations (`burden_correction/`), and the tree is made ultrametric with the iteratively
+reweighted means algorithm, so private branches also reflect real time. The root is at 0 and all tips at the mean
+corrected burden D.
+
+1. **Localisation at molecular time T.** Every lineage crossing T is placed in a bone k with probability
+   $\pi_k$, the fraction of sampled colonies from that bone, independently of the other lineages.
+2. **Ongoing migration after T.** Each lineage has migration events at a constant rate $\mu$ per unit molecular
+   time. The destination is drawn from $\pi$ (an F81 model), so an event can land in the same bone. The rate of real
+   moves (to another bone) is $\mu(1-\sum_k\pi_k^2)$; this is the "migration rate" below. The expected number of moves
+   per lineage between T and sampling is $\mu(1-\sum_k\pi_k^2)(D-T)$.
+
+Because $\pi$ is the stationary distribution, the likelihood of the observed bones is exact: the product over lineages
+crossing T of $\sum_k \pi_k L_k$, where $L$ is computed by Felsenstein pruning below T. It is evaluated on a grid of T
+and $\mu$.
+
+**Priors.**
+
+- **$\mu$:** 50% on $\mu = 0$ (localisation only, no further migration) and 50% log-uniform over $10^{-3.5}$ to
+  $10^{0.5}$ events per mutation.
+- **T:** uniform over **20-70 mutations**. For calibration, Kapadia et al. 2025 (Nature 641:681) estimate ~48 mutations
+  at birth and ~45 per year afterwards in C57BL/6J HSCs. But the embryonic mutation rate is not constant (in humans it
+  is higher over the first few divisions), and our corrected burdens are higher than theirs (MD7634 91, MD7635 79 at
+  6 months, vs ~71). So the molecular time of bone-marrow colonisation is uncertain, and we use a broad prior instead
+  of a guess at the embryonic mutation rate.
+
+**Tree uncertainty.** The likelihood is averaged over parametric bootstrap trees, with corrected branch lengths
+resampled from a Poisson distribution and made ultrametric again.
+
+**Important caveat.** Localisation at a single time point is a simplification. Colonisation of the bone marrow
+probably takes at least several days. Lineages that localise late (after T) look like "migration after
+localisation" in this model, so the inferred migration rate is an **upper bound** on true bone-to-bone migration. It
+mixes protracted initial localisation with later migration, especially at small T.
+
+### How the likelihood is calculated
+
+The fit does not reduce the data to summary statistics. For each combination of localisation time T and migration
+rate $\mu$ it calculates the probability that the model produces exactly the observed bone of every colony, given the
+tree (the likelihood). The posterior over the (T, $\mu$) grid is this likelihood times the prior, normalised.
+
+**A two-colony example.** Take two sister colonies whose lineages split after localisation, with four equally
+sampled bones. With no migration they must be in the same bone, so P(both femur) = 1/4 and P(one femur, one tibia) = 0.
+With very fast migration each colony's bone is effectively random, so both patterns have probability 1/16. Observing
+both colonies in femur is therefore 4x more likely without migration. Observing femur and tibia rules out "no
+migration" for this pair, unless the pair split before localisation (T after their split). The tree combines many such
+pairs and clades, each weighted by when it split: a same-bone pair that split late is strong evidence against
+migration, because there was little time to move.
+
+**Felsenstein pruning.** Summing over every possible history of bones on a tree of ~150 colonies is not feasible
+directly (4 bones at every internal node). Felsenstein's pruning algorithm (Felsenstein 1981, J Mol Evol 17:368), the
+standard method for likelihoods of characters on a phylogeny, does the sum efficiently by working from the tips
+towards the root:
+
+1. Each node n stores one number per bone k: the probability of the observed bones of all colonies below n, given that
+   lineage n was in bone k. For a colony this is 1 for its observed bone and 0 for the others.
+2. Passing up a branch of length t multiplies by the probability of going from bone k to bone j along that branch.
+   Here that is $e^{-\mu t}$ for no migration event (stay), plus $(1-e^{-\mu t})\pi_j$ for ending in bone j after one or
+   more events.
+3. At an internal node the two children are independent given the node's bone, so their passed-up vectors are
+   multiplied.
+
+Each node is visited once, so the cost grows linearly with the number of colonies instead of exponentially. Vectors are
+rescaled at each node to avoid numerical underflow on large trees.
+
+**Where T comes in.** Above T lineages have no bone. At T, each lineage crossing T starts in bone k with probability
+$\pi_k$, independently of the others. Its contribution is $\sum_k \pi_k L_k$, where $L$ is the pruning vector of the node
+at the bottom of its branch. Because $\pi$ is the stationary distribution of the migration process, the part of the
+branch between T and that node does not change this sum, so the pruning is done once per $\mu$ and reused for every T.
+The log-likelihood is the sum over crossing lineages. The code is `partials()` and `loglik_grid()` in
+`R/migration_model.R`.
+
+**Checks.** `tests/test_likelihood.R` compares the pruning likelihood with brute-force enumeration of every history on
+a 5-colony toy tree, checks that the probabilities of all possible bone patterns sum to 1, compares exact probabilities
+with the frequencies of patterns in forward simulations, and checks the no-clustering limits on a 300-colony tree:
+
+```{r likelihood_checks}
+#Run in its own environment and restore the random-number state, so the checks do not change any later results
+rng_state=.Random.seed
+local(source(paste0(my_working_dir,"migration_model/tests/test_likelihood.R"),local=TRUE))
+assign(".Random.seed",rng_state,envir=globalenv())
+```
+
+```{r parameters}
+bones=c("Femur","Iliac","Spine","Tibia")
+cell_type_colours=c(Femur="#219EBC",Tibia="#023047",Iliac="#FFB703",Spine="#FB8500")  #same colours as Figure 1
+T_grid=seq(20,70,by=1)                               #prior on T: uniform 20-70 mutations
+mu_grid=c(0,10^seq(-3.5,0.5,by=0.05))
+prior_T=rep(1,length(T_grid))
+prior_mu=c(0.5,rep(0.5/(length(mu_grid)-1),length(mu_grid)-1))
+n_boot=100                                           #bootstrap trees per mouse
+n_rep=40                                             #replicates per validation scenario
+postnatal_rate=45.3                                  #SNVs per year after birth (Kapadia et al. 2025), only for the per-year axis
+
+#Bone-marrow colonisation window, E15.5 to birth (E19.5), converted to molecular time assuming linear accumulation
+#before birth (Kapadia et al. 2025: ~48.2 mutations at birth, ~10 at gastrulation ~E6.5-7, i.e. ~2.9 per day).
+#'unscaled' takes our molecular time at face value; 'scaled' maps each tree's depth (6 months) onto the 70.9 mutations
+#expected at 6 months in Kapadia et al. (our corrected burdens are higher).
+colonisation_days=c(-4,0)                            #days relative to birth
+window_mol=function(scale=1) age_to_mol(colonisation_days/365,scale)
+
+md=suppressMessages(readxl::read_excel("sample_metadata/CAMPUOY000001_REUPLOAD_20231116_4xplates_York_Lily_CASM_STS_Sample_MANIFEST_Rec20231206_WithCGPIDs20231219.xlsx"))
+tissue=setNames(md$TISSUE_PHENOTYPE,md$INTERNAL_CASM_SAMPLE_NAME)
+```
+
+## Fit both mice
+
+```{r fit}
+boot_tree=function(tree){tree$edge.length=rpois(length(tree$edge.length),tree$edge.length); tree}
+fits=list()
+for(m in c("MD7634","MD7635")){
+  bc=readRDS(paste0("burden_correction/results/burden_correction_",m,".Rds"))
+  u=make_ultra(bc$tree); pt=prep_tree(u,tissue[u$tip.label],levels=bones)
+  ll=loglik_grid(pt,T_grid,mu_grid)
+  ll_boot=mclapply(1:n_boot,function(b){ub=make_ultra(boot_tree(bc$tree)); ub$edge.length=ub$edge.length*pt$D/max(node.depth.edgelength(ub))
+    loglik_grid(prep_tree(ub,tissue[ub$tip.label],levels=bones),T_grid,mu_grid,pi=pt$pi_obs)},mc.cores=n_cores)
+  ll_avg=log(Reduce(`+`,lapply(ll_boot,function(x) exp(x-max(ll))))/n_boot)+max(ll)
+  fits[[m]]=list(pt=pt,ll=ll,ll_avg=ll_avg,move_factor=1-sum(pt$pi_obs^2),scale=pt$D/age_to_mol(0.5))
+}
+#Joint: shared T (in mutations) and shared migration event rate mu
+fits$joint=list(ll_avg=fits$MD7634$ll_avg+fits$MD7635$ll_avg,move_factor=mean(c(fits$MD7634$move_factor,fits$MD7635$move_factor)),
+                pt=list(D=mean(c(fits$MD7634$pt$D,fits$MD7635$pt$D))))
+fits$joint$scale=fits$joint$pt$D/age_to_mol(0.5)
+
+#Colonisation windows in molecular time
+bind_rows(lapply(names(fits),function(m) data.frame(fit=m,scale=round(fits[[m]]$scale,3),
+  unscaled=paste(round(window_mol(),1),collapse="-"),scaled=paste(round(window_mol(fits[[m]]$scale),1),collapse="-"))))%>%knitr::kable()
+```
+
+### The trees and the prior range of T
+
+The shaded band is the prior range of the localisation time T (20-70 mutations).
+
+```{r trees, fig.width=12, fig.height=5}
+par(mfrow=c(1,2))
+for(m in c("MD7634","MD7635")){
+  u=fits[[m]]$pt$tree; u$coords=NULL
+  u=plot_tree(u,cex.label=0,plot_axis=T,title=m)
+  rect(-5,u$top-70,length(u$tip.label)+5,u$top-20,col=adjustcolor("grey",0.3),border=NA)
+  temp=sapply(u$tip.label,function(s) plot_category_tip_point(sample_ID=s,tree=u,cat_df=md%>%mutate(sample=INTERNAL_CASM_SAMPLE_NAME),
+                                                            cat_name="TISSUE_PHENOTYPE",cols=cell_type_colours,cex=1.2))
+  legend("topleft",inset=c(.01,.01),title="Bone",names(cell_type_colours),fill=cell_type_colours,cex=0.7,bty="n")
+}
+save_base_plot("trees_prior_range_T",width=12,height=5)
+```
+
+How much bone signal is in the trees? The table compares log-likelihoods with "bone independent of the tree" (no
+clustering):
+
+```{r signal}
+bind_rows(lapply(c("MD7634","MD7635"),function(m){f=fits[[m]]
+  data.frame(mouse=m,colonies=f$pt$n_tip,depth=round(f$pt$D,1),
+             logL_no_clustering=round(sum(log(f$pt$pi_obs[as.integer(f$pt$states)])),1),
+             logL_best_no_migration=round(max(f$ll_avg[,1]),1),T_best_no_migration=T_grid[which.max(f$ll_avg[,1])],
+             logL_best=round(max(f$ll_avg),1))}))
+```
+
+## Posterior of the migration rate by localisation time
+
+For each fit (each mouse separately, then both mice jointly):
+
+- **Left panel:** joint posterior density over localisation time T and the ongoing migration rate (moves to a
+  different bone per lineage per mutation of molecular time).
+- **Right panel:** posterior of the migration rate conditional on T (each column normalised), with the conditional
+  median and 95% credible interval.
+- **Colonisation window:** dashed lines and shaded bands mark T values corresponding to bone-marrow colonisation,
+  E15.5 to birth. HSPCs appear in the fetal marrow from ~E15.5-16.5, coinciding with vascularisation (Coskun et al.
+  2014, Cell Rep). The marrow does not support functional HSCs until about birth (Nat Commun 2022, PMC9477881). The
+  conversion assumes linear mutation accumulation before birth, which is probably wrong: the rate is likely higher in
+  the first divisions. So the bands are only a guide, and the analysis itself keeps the broad 20-70 prior. Green bands
+  take our molecular time at face value; blue bands scale our tree depth to the 6-month burden in Kapadia et al.
+- **Ridgeline plots** (after each heatmap): slices of the conditional posterior at T = 20, 25, ..., 70.
+- **Lower panels:** the marginal posterior of T, and the posterior probability of no migration after localisation
+  given T (the point mass at rate 0, which the heatmaps leave out).
+- **Right-hand axis:** converts the rate to approximate moves per year with the postnatal clock (45.3 SNVs/year). This
+  conversion applies only to the period after birth.
+
+```{r heatmap_functions}
+#Grids and priors of a fit (the ABC fits below use a coarser grid than the likelihood fits)
+grids=function(f) list(T=if(is.null(f$T_grid)) T_grid else f$T_grid,mu=if(is.null(f$mu_grid)) mu_grid else f$mu_grid,
+                       prior_T=if(is.null(f$prior_T)) prior_T else f$prior_T,prior_mu=if(is.null(f$prior_mu)) prior_mu else f$prior_mu)
+post_df=function(f){g=grids(f)
+  post=grid_posterior(f$ll_avg,g$prior_T,g$prior_mu)
+  expand.grid(T=g$T,i_mu=seq_along(g$mu))%>%mutate(mu=g$mu[i_mu],p=as.vector(post),rate=mu*f$move_factor)%>%
+    group_by(T)%>%mutate(p_cond=p/sum(p))%>%ungroup()
+}
+#Conditional (given T) posterior median and 95% interval of the rate; 0 if the quantile falls on "no migration"
+cond_summary=function(d){
+  d%>%group_by(T)%>%arrange(rate,.by_group=T)%>%mutate(cw=cumsum(p_cond))%>%
+    summarise(P_no_migration=p_cond[mu==0],lo=rate[which(cw>=0.025)[1]],med=rate[which(cw>=0.5)[1]],hi=rate[which(cw>=0.975)[1]],
+              P_T=sum(p),.groups="drop")
+}
+#Shaded bands for the colonisation windows (unscaled, scaled)
+windows_df=function(f) data.frame(window=c("E15.5-birth, unscaled","E15.5-birth, scaled to tree depth"),
+  xmin=c(window_mol()[1],window_mol(f$scale)[1]),xmax=c(window_mol()[2],window_mol(f$scale)[2]))
+mouse_labels=c(MD7634="Mouse 1",MD7635="Mouse 2",joint="Both mice")
+window_cols=c("E15.5-birth, unscaled"="#2CA02C","E15.5-birth, scaled to tree depth"="#1F77B4")
+window_layers=function(f,fill=FALSE){w=windows_df(f)
+  if(fill) list(geom_rect(data=w,aes(xmin=xmin,xmax=xmax,ymin=-Inf,ymax=Inf,fill=window),alpha=0.2,inherit.aes=F),
+                scale_fill_manual(values=window_cols,name=NULL))
+  else list(geom_vline(data=w%>%pivot_longer(c(xmin,xmax)),aes(xintercept=value,col=window),linewidth=0.7,linetype=2),
+            scale_colour_manual(values=window_cols,name=NULL))}
+#show_p_no_migration=FALSE leaves out the P(no migration | T) panel (used for the saved figure files)
+heatmaps=function(f,title,show_p_no_migration=TRUE){
+  d=post_df(f); cs=cond_summary(d); dp=d%>%filter(mu>0)
+  floor_rate=min(dp$rate)  #quantiles at 0 are drawn at the bottom of the axis
+  cl=cs%>%mutate(across(c(lo,med,hi),~pmax(.x,floor_rate)))
+  #raster=FALSE: Quartz PDFs draw raster colour bars upside down
+  base=function(fill,lab) list(geom_tile(aes(fill={{fill}})),scale_fill_viridis_c(option="magma",name=lab,guide=guide_colourbar(raster=FALSE)),
+    scale_y_log10(sec.axis=sec_axis(~.*postnatal_rate,name="~ moves per year (postnatal clock)")),
+    theme_classic(),labs(x="Localisation time T (mutations)",y="Migration rate (moves per lineage per mutation)"))
+  #Joint density: posterior mass per grid cell over T x log10(rate), mu > 0 only (mass at mu = 0 is in the lower panel)
+  p1=ggplot(dp,aes(T,rate))+base(p,"Posterior")+window_layers(f)+ggtitle(paste0(title,": joint posterior"))
+  p2=ggplot(dp,aes(T,rate))+base(p_cond,"Posterior\ngiven T")+
+    geom_line(data=cl,aes(T,med),col="white")+geom_line(data=cl,aes(T,lo),col="white",linetype=2)+geom_line(data=cl,aes(T,hi),col="white",linetype=2)+window_layers(f)+
+    ggtitle(paste0(title,": migration rate given T"),subtitle="white: conditional median and 95% CrI (0 drawn at the bottom)")
+  p3=ggplot(cs,aes(T,P_T))+window_layers(f,fill=TRUE)+geom_col(fill="grey40",width=diff(grids(f)$T)[1])+theme_classic()+labs(x="Localisation time T (mutations)",y="Marginal posterior of T")
+  p4=ggplot(cs,aes(T,P_no_migration))+window_layers(f,fill=TRUE)+geom_line()+ylim(0,1)+theme_classic()+labs(x="Localisation time T (mutations)",y="P(no migration | T)")
+  bottom=if(show_p_no_migration) (p3|p4) else (p3|plot_spacer())
+  (p1|p2)/bottom+plot_layout(heights=c(3,1),guides="collect")&theme(legend.position="right")
+}
+
+#Ridgeline plot: posterior of the migration rate given T, for slices of T. Ridges are the conditional density over
+#log10(rate) for rate > 0 (area = 1 - P(no migration)); the bar at "0" is the point mass on no migration (bar height
+#P(0) x 4 mutations, so a bar reaching the next slice up has P(0) = 0.8)
+ridges=function(f,title,T_slices=seq(20,70,5)){
+  d=post_df(f)%>%filter(T%in%T_slices); w=windows_df(f)
+  d=d%>%mutate(in_window=case_when(T>=w$xmin[1]&T<=w$xmax[1]&T>=w$xmin[2]&T<=w$xmax[2]~"Both windows",
+                                   T>=w$xmin[1]&T<=w$xmax[1]~"E15.5-birth, unscaled",
+                                   T>=w$xmin[2]&T<=w$xmax[2]~"E15.5-birth, scaled to tree depth",TRUE~"Outside window"))
+  dp=d%>%filter(mu>0)%>%mutate(dens=p_cond/diff(log10(grids(f)$mu[-1]))[1])  #density per log10 unit
+  x0=10^(floor(log10(min(dp$rate))*2)/2-0.5)  #position of the "0" bar
+  p0=d%>%filter(mu==0)%>%mutate(lab=sprintf("%.2f",p_cond))
+  ggplot(dp,aes(x=rate,y=T,height=dens,group=T,fill=in_window))+
+    geom_ridgeline(scale=2.5,alpha=0.8,col="grey20")+
+    geom_rect(data=p0,aes(xmin=x0/1.4,xmax=x0*1.4,ymin=T,ymax=T+4*p_cond,fill=in_window),col="grey20",inherit.aes=F)+
+    geom_text(data=p0,aes(x=x0*1.6,y=T+1,label=lab),inherit.aes=F,hjust=0,size=2.8)+
+    scale_x_log10(breaks=c(x0,10^(-3:0)),labels=c("0",parse(text=paste0("10^",-3:0))),
+                  sec.axis=sec_axis(~.*postnatal_rate,name="~ moves per year (postnatal clock)",breaks=10^(-2:2),labels=parse(text=paste0("10^",-2:2))))+
+    scale_y_continuous(breaks=T_slices)+
+    scale_fill_manual(values=c(window_cols,"Both windows"="#17BECF","Outside window"="grey80"),name=NULL)+
+    theme_classic()+labs(x="Migration rate (moves per lineage per mutation)",y="Localisation time T (mutations)",
+                         title=paste0(title,": migration rate given T"),
+                         subtitle="Bar at 0 (number beside it): posterior probability of no migration after localisation")
+}
+```
+
+### MD7634
+
+```{r heatmap_MD7634, fig.width=13, fig.height=7}
+p=heatmaps(fits$MD7634,"Mouse 1"); p
+save_gg(heatmaps(fits$MD7634,"Mouse 1",show_p_no_migration=FALSE),"heatmap_MD7634",width=13,height=7)
+```
+
+```{r ridges_MD7634, fig.width=9, fig.height=7}
+p=ridges(fits$MD7634,"Mouse 1"); p
+save_gg(p,"ridges_MD7634",width=9,height=7)
+```
+
+### MD7635
+
+```{r heatmap_MD7635, fig.width=13, fig.height=7}
+p=heatmaps(fits$MD7635,"Mouse 2"); p
+save_gg(heatmaps(fits$MD7635,"Mouse 2",show_p_no_migration=FALSE),"heatmap_MD7635",width=13,height=7)
+```
+
+```{r ridges_MD7635, fig.width=9, fig.height=7}
+p=ridges(fits$MD7635,"Mouse 2"); p
+save_gg(p,"ridges_MD7635",width=9,height=7)
+```
+
+### Joint (both mice)
+
+T (in mutations) and the migration event rate are shared. The two trees differ in depth (91 vs 79 mutations), so a
+shared T in mutations assumes the difference arises after localisation.
+
+```{r heatmap_joint, fig.width=13, fig.height=7}
+p=heatmaps(fits$joint,"Both mice"); p
+save_gg(heatmaps(fits$joint,"Both mice",show_p_no_migration=FALSE),"heatmap_joint",width=13,height=7)
+```
+
+```{r ridges_joint, fig.width=9, fig.height=7}
+p=ridges(fits$joint,"Both mice"); p
+save_gg(p,"ridges_joint",width=9,height=7)
+```
+
+### Summary table
+
+Posterior median (95% credible interval) over the full prior (T uniform 20-70):
+
+```{r summary_table}
+fmt=function(x) sprintf("%.3g (%.3g-%.3g)",x[2],x[1],x[3])
+summ=bind_rows(lapply(names(fits),function(m){f=fits[[m]]; post=grid_posterior(f$ll_avg,prior_T,prior_mu)
+  Tm=matrix(T_grid,length(T_grid),length(mu_grid)); R=matrix(mu_grid*f$move_factor,length(T_grid),length(mu_grid),byrow=T)
+  q=function(x){o=order(x);cw=cumsum(post[o]);sapply(c(0.025,0.5,0.975),function(p) x[o][which(cw>=p)[1]])}
+  moves=R*(f$pt$D-Tm)
+  data.frame(fit=m,P_no_migration=round(sum(post[,1]),2),T=fmt(q(Tm)),rate_per_mutation=fmt(q(R)),
+             moves_per_year_postnatal=fmt(q(R*postnatal_rate)),moves_per_lineage_after_T=fmt(q(moves)),P_never_moved=fmt(q(exp(-moves))))}))
+knitr::kable(summ)
+```
+
+And conditional on a few values of T:
+
+```{r conditional_table}
+bind_rows(lapply(names(fits),function(m){cs=cond_summary(post_df(fits[[m]]))%>%filter(T%in%c(20,30,40,50,60,70))
+  data.frame(fit=m,T=cs$T,P_no_migration=round(cs$P_no_migration,2),
+             rate_per_mutation=sprintf("%.2g (%.2g-%.2g)",cs$med,cs$lo,cs$hi),
+             moves_per_year_postnatal=sprintf("%.2g (%.2g-%.2g)",cs$med*postnatal_rate,cs$lo*postnatal_rate,cs$hi*postnatal_rate))}))%>%
+  knitr::kable()
+```
+
+## Does the model reproduce the observed clustering?
+
+The clustering statistic is the fraction of colony pairs from the same bone, among pairs whose most recent common
+ancestor is at height ≥ h. The plot compares the observed values with 200 simulations from each of these models:
+
+- the posterior;
+- the best model without migration (T in 20-70);
+- localisation at T = 20 with no migration;
+- no clustering.
+
+```{r ppc, fig.width=11, fig.height=5}
+ppc=list()
+for(m in c("MD7634","MD7635")){f=fits[[m]]; pt=f$pt; h_cut=seq(0,floor(pt$D)-5,by=2)
+  post=grid_posterior(f$ll_avg,prior_T,prior_mu); idx=sample(length(post),200,replace=T,prob=post)
+  models=list(posterior=data.frame(T=T_grid[row(post)[idx]],mu=mu_grid[col(post)[idx]]),
+              no_migration_best_T=data.frame(T=T_grid[which.max(f$ll_avg[,1])],mu=0)[rep(1,200),],
+              no_migration_T20=data.frame(T=20,mu=0)[rep(1,200),],
+              no_clustering=data.frame(T=min(pt$h[1:pt$n_tip])-1e-6,mu=0)[rep(1,200),])
+  obs=pair_stat(pt,setNames(as.character(pt$states),pt$tree$tip.label),h_cut)
+  for(nm in names(models)){d=models[[nm]]
+    sims=do.call(rbind,mclapply(1:nrow(d),function(r) pair_stat(pt,simulate_states(pt,d$T[r],d$mu[r]),h_cut),mc.cores=n_cores))
+    ppc[[paste(m,nm)]]=data.frame(mouse=m,model=nm,h=h_cut,obs=obs,lo=apply(sims,2,quantile,0.025,na.rm=T),
+                                  med=apply(sims,2,median,na.rm=T),hi=apply(sims,2,quantile,0.975,na.rm=T))}
+}
+ppc_plot<-bind_rows(ppc)%>%ggplot(aes(h))+geom_ribbon(aes(ymin=lo,ymax=hi,fill=model),alpha=0.2)+geom_line(aes(y=med,col=model))+
+  geom_point(aes(y=obs),size=0.8)+facet_wrap(~mouse)+theme_classic()+
+  labs(x="h (pairs whose common ancestor is at height >= h, mutations)",y="Fraction of pairs from the same bone",
+       title="Observed (points) vs simulated (median, 95% interval)")
+ppc_plot
+save_gg(ppc_plot,"posterior_predictive_same_bone_pairs",width=11,height=5)
+```
+
+## Validation by simulation
+
+Bones are simulated on the real MD7634 tree with known T and known moves per lineage after T, then fitted with the
+same priors (`r n_rep` replicates per scenario).
+
+```{r validation}
+pt=fits$MD7634$pt; mf=fits$MD7634$move_factor
+truth=expand.grid(T=c(30,45,60),moves=c(0,0.1,0.3,1))
+val=bind_rows(mclapply(seq_len(nrow(truth)*n_rep),function(k){i=(k-1)%/%n_rep+1; Tt=truth$T[i]; mv=truth$moves[i]
+  s=simulate_states(pt,Tt,mv/mf/(pt$D-Tt)); ps=prep_tree(pt$tree,s,levels=bones)
+  post=grid_posterior(loglik_grid(ps,T_grid,mu_grid),prior_T,prior_mu)
+  q=post_summary(post,T_grid,mu_grid,pt$D,ps$pi_obs)
+  data.frame(T_true=Tt,moves_true=mv,T_med=q["T","q50"],T_lo=q["T","q2.5"],T_hi=q["T","q97.5"],
+             moves_med=q["moves_per_lineage","q50"],moves_lo=q["moves_per_lineage","q2.5"],moves_hi=q["moves_per_lineage","q97.5"],
+             P_no_migration=sum(post[,1]))},mc.cores=n_cores))
+val%>%group_by(T_true,moves_true)%>%
+  summarise(T_median=median(T_med),T_cover95=mean(T_lo<=T_true&T_hi>=T_true),
+            moves_median=signif(median(moves_med),2),moves_cover95=mean(moves_lo<=moves_true+1e-9&moves_hi>=moves_true-1e-9),
+            mean_P_no_migration=signif(mean(P_no_migration),2),.groups="drop")%>%knitr::kable()
+```
+
+At late T (60), few clades coalesce after localisation, so the method has little power to detect modest migration
+(0.1-0.3 moves per lineage). Absence of evidence for migration at late T is therefore weak evidence.
+
+## Simulation-based inference using the clustering statistics
+
+The likelihood above uses every colony's bone, but only through the model. The clade x bone chi-squared tests in
+`Mouse_phylo_clustering.Rmd` are highly significant:
+
+- MD7634: global p < 0.0005, from the minimum over cut-offs calibrated by simulation;
+- MD7635: p = 0.03.
+
+So here the same model is fitted with the data entering **only through the clustering statistics**. The posterior is
+then the set of (T, rate) that reproduce the observed chi-squared curve.
+
+**Method.**
+
+1. **Reference table.** For every cell of a (T, $\mu$) grid, simulate the bones of all colonies on the real tree
+   `n_sim` times. The grid is T = 20-70 in steps of 2.5, and $\mu$ = 0 plus 10^-3.5 to 10^0.5 in steps of 0.1 log10.
+2. **Summary statistics.**
+   - Main analysis: the clade x bone chi-squared statistics at cut-offs 10, 15, ..., 50 mutations, computed exactly
+     as in `Mouse_phylo_clustering.Rmd`. Cut-offs 5, 55 and 60 are left out because they have too few clades.
+   - Sensitivity analysis: these statistics plus the same-bone fractions of pairs whose common ancestor is at 20-30,
+     30-40 and > 40.
+3. **Synthetic likelihood (main method; Wood 2010).** In each cell, the simulated summaries are approximated by a
+   multivariate normal with that cell's own mean and covariance (chi-squared statistics square-root transformed). The
+   observed summaries are scored under it.
+4. **Kernel ABC (check).** A Gaussian kernel on the Mahalanobis distance between simulated and observed summaries,
+   scaled by the simulation noise of the summaries without clustering, with bandwidth = the 1% quantile of all
+   distances.
+
+**Why a synthetic likelihood rather than plain ABC.** With nine strongly correlated summaries, rejection or kernel ABC
+needs a single distance scale for all cells. Strongly clustered cells (early T, no migration) are far noisier than
+nearly unclustered ones. Any common scale either blurs the distinctions that matter near "no clustering" or rejects
+almost everything. The synthetic likelihood uses each cell's own noise level, and with 1,000 simulations per cell it is
+the more efficient use of the simulations. It does assume roughly normal summaries; kernel ABC does not and is shown as
+a check. In practice kernel ABC turned out almost uninformative here (relative likelihood ~1 across all rates, at any
+bandwidth), so the synthetic likelihood is the method to read.
+
+```{r abc_settings}
+source(paste0(my_working_dir,"migration_model/R/abc.R"))
+T_abc=seq(20,70,by=2.5)
+mu_abc=c(0,10^seq(-3.5,0.5,by=0.1))
+prior_T_abc=rep(1,length(T_abc))
+prior_mu_abc=c(0.5,rep(0.5/(length(mu_abc)-1),length(mu_abc)-1))
+prior_cell=as.vector(outer(prior_T_abc,prior_mu_abc))  #grid cells in expand.grid order (T fastest)
+n_sim=1000                                     #simulations per grid cell
+abc_cuts=seq(10,50,5)
+abc_bands=list(c(20,30),c(30,40),c(40,Inf))
+abc_q=0.01                                     #kernel ABC bandwidth = this quantile of distances
+stat_sets=list(chisq=paste0("chisq_",abc_cuts),
+               chisq_pairs=c(paste0("chisq_",abc_cuts),"same_20_30","same_30_40","same_40_Inf"))
+```
+
+```{r abc_reference}
+#Reference tables are cached in migration_model/results/ (recomputed if the settings change)
+abc_ref=list(); abc_obs=list(); abc_ss=list(); sl_prep=list()
+for(m in c("MD7634","MD7635")){pt=fits[[m]]$pt
+  ss=make_ss(pt,abc_cuts,abc_bands); abc_ss[[m]]=ss
+  abc_obs[[m]]=setNames(summaries(as.integer(pt$states),ss),ss$names)
+  settings=list(T=T_abc,mu=mu_abc,n_sim=n_sim,cuts=abc_cuts,bands=abc_bands,D=pt$D)
+  file=paste0(my_working_dir,"migration_model/results/abc_reference_",m,".Rds")
+  if(file.exists(file)&&identical(readRDS(file)$settings,settings)){abc_ref[[m]]=readRDS(file)$ref} else {
+    abc_ref[[m]]=abc_reference(pt,ss,T_abc,mu_abc,n_sim,n_cores=n_cores)
+    saveRDS(list(settings=settings,ref=abc_ref[[m]]),file)}
+  sl_prep[[m]]=lapply(stat_sets,function(st) synthetic_prep(abc_ref[[m]],match(st,abc_ref[[m]]$names)))
+}
+#Observed summary statistics
+bind_rows(lapply(names(abc_obs),function(m) data.frame(mouse=m,t(round(abc_obs[[m]],3)))))%>%knitr::kable()
+```
+
+```{r abc_fit}
+as_fit=function(m,loglik) list(ll_avg=matrix(loglik,length(T_abc),length(mu_abc)),pt=fits[[m]]$pt,move_factor=fits[[m]]$move_factor,
+  scale=fits[[m]]$scale,T_grid=T_abc,mu_grid=mu_abc,prior_T=prior_T_abc,prior_mu=prior_mu_abc)
+sl_fit=function(m,set) {use=match(stat_sets[[set]],abc_ref[[m]]$names)
+  as_fit(m,synthetic_loglik(sl_prep[[m]][[set]],abc_obs[[m]],use,abc_ref[[m]]$names))}
+kabc_fit=function(m,set,q=abc_q){ref=abc_ref[[m]]
+  a=abc_likelihood(ref,abc_obs[[m]],prior_cell=prior_cell,q=q,use=match(stat_sets[[set]],ref$names))
+  f=as_fit(m,log(a$lik)); f$kernel=a; f}
+add_joint=function(x){j=x$MD7634; j$ll_avg=x$MD7634$ll_avg+x$MD7635$ll_avg; j$move_factor=fits$joint$move_factor
+  j$scale=fits$joint$scale; j$pt=list(D=fits$joint$pt$D); x$joint=j; x}
+sl=lapply(names(stat_sets),function(set) add_joint(list(MD7634=sl_fit("MD7634",set),MD7635=sl_fit("MD7635",set)))); names(sl)=names(stat_sets)
+kabc=add_joint(list(MD7634=kabc_fit("MD7634","chisq"),MD7635=kabc_fit("MD7635","chisq")))
+```
+
+### Synthetic-likelihood posteriors (chi-squared statistics)
+
+These are the same displays as for the likelihood fit.
+
+```{r sl_MD7634, fig.width=13, fig.height=7}
+p=heatmaps(sl$chisq$MD7634,"Mouse 1 (fitted to χ² statistics only)"); p
+save_gg(heatmaps(sl$chisq$MD7634,"Mouse 1 (fitted to χ² statistics only)",show_p_no_migration=FALSE),"heatmap_MD7634_synthetic_likelihood",width=13,height=7)
+```
+
+```{r sl_ridges_MD7634, fig.width=9, fig.height=7}
+p=ridges(sl$chisq$MD7634,"Mouse 1 (fitted to χ² statistics only)"); p
+save_gg(p,"ridges_MD7634_synthetic_likelihood",width=9,height=7)
+```
+
+```{r sl_MD7635, fig.width=13, fig.height=7}
+p=heatmaps(sl$chisq$MD7635,"Mouse 2 (fitted to χ² statistics only)"); p
+save_gg(heatmaps(sl$chisq$MD7635,"Mouse 2 (fitted to χ² statistics only)",show_p_no_migration=FALSE),"heatmap_MD7635_synthetic_likelihood",width=13,height=7)
+```
+
+```{r sl_ridges_MD7635, fig.width=9, fig.height=7}
+p=ridges(sl$chisq$MD7635,"Mouse 2 (fitted to χ² statistics only)"); p
+save_gg(p,"ridges_MD7635_synthetic_likelihood",width=9,height=7)
+```
+
+```{r sl_joint, fig.width=13, fig.height=7}
+p=heatmaps(sl$chisq$joint,"Both mice (fitted to χ² statistics only)"); p
+save_gg(heatmaps(sl$chisq$joint,"Both mice (fitted to χ² statistics only)",show_p_no_migration=FALSE),"heatmap_joint_synthetic_likelihood",width=13,height=7)
+```
+
+```{r sl_ridges_joint, fig.width=9, fig.height=7}
+p=ridges(sl$chisq$joint,"Both mice (fitted to χ² statistics only)"); p
+save_gg(p,"ridges_joint_synthetic_likelihood",width=9,height=7)
+```
+
+### How strongly are high migration rates excluded? (prior-free)
+
+Posterior upper bounds on the rate depend on the prior. High rates all look like "no clustering", so the further the
+prior extends, the more mass sits there. A prior-free summary is the **relative likelihood**: the likelihood at each
+rate relative to the best rate, for T in the bone-marrow colonisation window. The likelihood is averaged over T in the
+union of the two windows, i.e. uniform weighting within the window.
+
+The dotted lines are likelihood ratios of 1/8 and 1/32, conventional "fairly strong" and "strong" evidence against a
+rate. A curve that flattens at high rates instead of falling to 0 means those rates are not excluded.
+
+```{r relative_likelihood, fig.width=11, fig.height=4.5}
+rel_lik=function(f,label,method){g=grids(f); win=range(c(window_mol(),window_mol(f$scale))); iw=g$T>=win[1]&g$T<=win[2]
+  L=log(colMeans(exp(f$ll_avg[iw,,drop=F]-max(f$ll_avg[iw,]))))
+  data.frame(fit=label,method=method,rate_per_year=g$mu*f$move_factor*postnatal_rate,rel=exp(L-max(L)))}
+rl=bind_rows(lapply(c("MD7634","MD7635","joint"),function(m) bind_rows(rel_lik(fits[[m]],m,"exact likelihood"),
+  rel_lik(sl$chisq[[m]],m,"synthetic likelihood (chi-squared)"),rel_lik(sl$chisq_pairs[[m]],m,"synthetic likelihood (chi-squared + pairs)"))))
+x0=1e-3
+method_labels=c("exact likelihood"="Fitted to all data","synthetic likelihood (chi-squared)"="Fitted to χ² statistics only",
+                 "synthetic likelihood (chi-squared + pairs)"="Fitted to χ² statistics and same-bone pairs")
+rel_lik_plot<-ggplot(rl%>%mutate(rate_per_year=ifelse(rate_per_year==0,x0,rate_per_year),fit=factor(mouse_labels[fit],levels=mouse_labels),
+                                 method=factor(method_labels[method],levels=method_labels)),aes(rate_per_year,rel,col=method))+
+  geom_line()+geom_point(data=~filter(.x,rate_per_year==x0),size=2)+geom_hline(yintercept=c(1/8,1/32),linetype=3)+
+  facet_wrap(~fit)+scale_x_log10(breaks=c(x0,0.01,0.1,1,10,100),labels=c("0","0.01","0.1","1","10","100"))+theme_classic()+
+  labs(x="Migration rate (moves per year, postnatal clock)",y="Likelihood relative to best rate",col=NULL,
+       title="Relative likelihood of the migration rate, T in the colonisation window")+theme(legend.position="bottom")
+rel_lik_plot
+save_gg(rel_lik_plot,"relative_likelihood_colonisation_window",width=11,height=4.5)
+```
+
+### Comparison of methods
+
+For each fit the table gives:
+
+- P(no migration), the posterior of T, and moves per year (postnatal clock), over the full 20-70 prior;
+- within the colonisation window (the union of the unscaled and scaled windows): P(no migration), P(rate > 1 per
+  year), the 95% upper bound on the rate, and the relative likelihood of rates >= 10 per year (prior-free).
+
+```{r abc_compare}
+fit_summary=function(f,label,method){g=grids(f); post=grid_posterior(f$ll_avg,g$prior_T,g$prior_mu)
+  Tm=matrix(g$T,length(g$T),length(g$mu)); R=matrix(g$mu*f$move_factor*postnatal_rate,length(g$T),length(g$mu),byrow=T)
+  q=function(x,w){o=order(x);cw=cumsum(w[o])/sum(w);sapply(c(0.025,0.5,0.975),function(p) x[o][which(cw>=p)[1]])}
+  win=range(c(window_mol(),window_mol(f$scale))); iw=g$T>=win[1]&g$T<=win[2]; pw=post[iw,,drop=F]
+  r=rel_lik(f,label,method)
+  data.frame(fit=label,method=method,P_no_migration=round(sum(post[,1]),2),T=fmt(q(Tm,post)),moves_per_year=fmt(q(R,post)),
+             window=paste(round(win,1),collapse="-"),window_P_no_migration=round(sum(pw[,1])/sum(pw),2),
+             window_P_above_1_per_year=round(sum(pw[R[iw,,drop=F]>1])/sum(pw),2),window_upper95_per_year=signif(q(R[iw,,drop=F],pw)[3],2),
+             rel_lik_10_per_year=signif(mean(r$rel[r$rate_per_year>=10]),2))}
+bind_rows(lapply(c("MD7634","MD7635","joint"),function(m) bind_rows(
+  fit_summary(fits[[m]],m,"exact likelihood"),fit_summary(sl$chisq[[m]],m,"synthetic lik., chi-squared"),
+  fit_summary(sl$chisq_pairs[[m]],m,"synthetic lik., chi-squared + pairs"),fit_summary(kabc[[m]],m,"kernel ABC, chi-squared"))))%>%
+  knitr::kable()
+```
+
+Kernel ABC sensitivity to the bandwidth (quantile of distances):
+
+```{r abc_tolerance}
+bind_rows(lapply(c(0.001,0.01,0.05),function(q){x=add_joint(list(MD7634=kabc_fit("MD7634","chisq",q),MD7635=kabc_fit("MD7635","chisq",q)))
+  bind_rows(lapply(names(x),function(m) fit_summary(x[[m]],m,paste0("kernel ABC, q = ",q))))}))%>%
+  dplyr::select(fit,method,P_no_migration,T,moves_per_year,window_P_no_migration,window_upper95_per_year,rel_lik_10_per_year)%>%knitr::kable()
+```
+
+### Does each posterior reproduce the chi-squared curve?
+
+The observed chi-squared curve is compared with reference-table simulations, without new simulations, for:
+
+- the synthetic-likelihood posterior;
+- the exact-likelihood posterior (interpolated onto this grid);
+- no clustering (T = 70, highest rate).
+
+The final column gives the Mahalanobis distance of the observed curve from the best-fitting cell, as a tail
+probability. It is the fraction of that cell's simulations at least as far from its own mean, and is small if no
+(T, rate) reproduces the curve.
+
+```{r abc_ppc, fig.width=11, fig.height=5}
+ppc_abc=bind_rows(lapply(c("MD7634","MD7635"),function(m){ref=abc_ref[[m]]; j=match(stat_sets$chisq,ref$names); n_cell=nrow(ref$grid)
+  draw_cells=function(pc,n=2000){k=sample(n_cell,n,replace=T,prob=pc); s=sample(n_sim,n,replace=T)
+    matrix(ref$S[cbind(rep(k,length(j)),rep(s,length(j)),rep(j,each=n))],n)}
+  post_sl=as.vector(grid_posterior(sl$chisq[[m]]$ll_avg,prior_T_abc,prior_mu_abc))
+  pl=grid_posterior(fits[[m]]$ll_avg,prior_T,prior_mu); iT=sapply(T_grid,function(t) which.min(abs(T_abc-t)))
+  imu=sapply(mu_grid,function(x) if(x==0) 1 else 1+which.min(abs(log10(mu_abc[-1])-log10(x))))
+  pc=matrix(0,length(T_abc),length(mu_abc)); for(a in seq_along(T_grid)) for(b in seq_along(mu_grid)) pc[iT[a],imu[b]]=pc[iT[a],imu[b]]+pl[a,b]
+  one=function(T,mu){w=rep(0,n_cell); w[which(ref$grid$T==T&ref$grid$mu==mu)]=1; w}
+  sets=list(synthetic_likelihood=post_sl,exact_likelihood=as.vector(pc),no_clustering=one(70,max(mu_abc)))
+  bind_rows(lapply(names(sets),function(nm){X=draw_cells(sets[[nm]])
+    data.frame(mouse=m,model=nm,cut=abc_cuts,obs=abc_obs[[m]][j],lo=apply(X,2,quantile,0.025),med=apply(X,2,median),hi=apply(X,2,quantile,0.975))}))}))
+model_labels=c(exact_likelihood="Fitted model (all data)",synthetic_likelihood="Fitted model (χ² statistics only)",no_clustering="No clustering")
+#No clustering as a grey band (reference); fitted models as coloured median lines with dashed 95% intervals (no overlapping fills)
+ppc_plot_df=ppc_abc%>%mutate(mouse=factor(mouse_labels[mouse],levels=mouse_labels[1:2]),model=factor(model_labels[model],levels=model_labels))
+fit_cols=c("Fitted model (all data)"="#D55E00","Fitted model (χ² statistics only)"="#0072B2")
+abc_ppc_plot<-ggplot(ppc_plot_df,aes(cut))+
+  geom_ribbon(data=~filter(.x,model=="No clustering"),aes(ymin=lo,ymax=hi,fill="No clustering (median and 95% interval)"),alpha=0.5)+
+  geom_line(data=~filter(.x,model=="No clustering"),aes(y=med),col="grey45")+
+  geom_line(data=~filter(.x,model!="No clustering"),aes(y=med,col=model),linewidth=0.8)+
+  geom_line(data=~filter(.x,model!="No clustering"),aes(y=lo,col=model),linetype=2)+
+  geom_line(data=~filter(.x,model!="No clustering"),aes(y=hi,col=model),linetype=2)+
+  geom_point(aes(y=obs,shape="Observed"),size=1.6)+
+  scale_fill_manual(values=c("No clustering (median and 95% interval)"="grey80"),name=NULL)+
+  scale_colour_manual(values=fit_cols,name=NULL)+scale_shape_manual(values=c(Observed=16),name=NULL)+
+  facet_wrap(~mouse,scales="free_y")+theme_classic()+
+  labs(x="Molecular-time cut-off (mutations)",y="Clade × bone χ² statistic",
+       title="Observed vs simulated χ² statistics",subtitle="Lines: median (solid) and 95% interval (dashed) of simulations from each fitted model")+
+  guides(shape=guide_legend(order=1),colour=guide_legend(order=2),fill=guide_legend(order=3))
+abc_ppc_plot
+save_gg(abc_ppc_plot,"posterior_predictive_chisq_curve",width=11,height=5)
+#Goodness of fit of the best cell
+bind_rows(lapply(c("MD7634","MD7635"),function(m){ref=abc_ref[[m]]; j=match(stat_sets$chisq,ref$names); k=which.max(sl$chisq[[m]]$ll_avg)
+  X=sl_transform(matrix(ref$S[k,,j],n_sim),ref$names[j]); C=cov(X); mu=colMeans(X); x=sqrt(abc_obs[[m]][j])
+  d_obs=mahalanobis(x,mu,C); d_sim=mahalanobis(X,mu,C)
+  data.frame(mouse=m,best_T=ref$grid$T[k],best_rate_per_year=signif(ref$grid$mu[k]*fits[[m]]$move_factor*postnatal_rate,2),
+             distance2_observed=round(d_obs,1),P_simulation_as_far=round(mean(d_sim>=d_obs),3))}))%>%knitr::kable()
+```
+
+### Validation of the synthetic likelihood
+
+New datasets are simulated on each tree with known T and moves per lineage after T (the nearest grid value of
+$\mu$), then fitted with the stored reference tables (chi-squared statistics).
+
+```{r abc_validation}
+n_val=40
+abc_val=bind_rows(lapply(c("MD7634","MD7635"),function(m){pt=fits[[m]]$pt; ref=abc_ref[[m]]; ss=abc_ss[[m]]; mf=fits[[m]]$move_factor
+  truth=expand.grid(T=c(30,45,60),moves=c(0,0.1,0.3,1)); use=match(stat_sets$chisq,ref$names)
+  bind_rows(mclapply(seq_len(nrow(truth)),function(i){Tt=truth$T[i]
+    mu=if(truth$moves[i]==0) 0 else mu_abc[-1][which.min(abs(log10(mu_abc[-1])-log10(truth$moves[i]/mf/(pt$D-Tt))))]
+    mv=mu*mf*(pt$D-Tt); st=simulate_states_multi(pt,Tt,mu,n_val)
+    bind_rows(lapply(1:n_val,function(r){ll=synthetic_loglik(sl_prep[[m]]$chisq,summaries(st[,r],ss),use,ref$names)
+      post=grid_posterior(matrix(ll,length(T_abc),length(mu_abc)),prior_T_abc,prior_mu_abc)
+      qq=post_summary(post,T_abc,mu_abc,pt$D,pt$pi_obs)
+      data.frame(mouse=m,T_true=Tt,moves_true=signif(mv,2),T_med=qq["T","q50"],T_lo=qq["T","q2.5"],T_hi=qq["T","q97.5"],
+                 moves_med=qq["moves_per_lineage","q50"],moves_lo=qq["moves_per_lineage","q2.5"],moves_hi=qq["moves_per_lineage","q97.5"],
+                 P_no_migration=sum(post[,1]))}))},mc.cores=n_cores))}))
+abc_val%>%group_by(mouse,T_true,moves_true)%>%
+  summarise(T_median=median(T_med),T_cover95=mean(T_lo<=T_true&T_hi>=T_true),moves_median=signif(median(moves_med),2),
+            moves_upper95=signif(median(moves_hi),2),moves_cover95=mean(moves_lo<=moves_true*1.0001&moves_hi>=moves_true*0.9999),
+            mean_P_no_migration=signif(mean(P_no_migration),2),.groups="drop")%>%knitr::kable()
+```
+
+## Results (run of 2026-10-30)
+
+- **MD7635.**
+  - Localisation at T ~ 27-45 (median 34).
+  - If T < ~38, ongoing migration is needed: ~0.15 moves/year (0.04-0.43) at T = 30, ~0.4 at T = 20.
+  - If T >= ~40, no migration is the most likely explanation (P ~ 0.6-0.8), but the upper bounds widen with T.
+  - About 90% of lineages never moved after localisation (posterior median).
+- **MD7634.**
+  - Bone clustering is weak.
+  - T is poorly constrained; the posterior favours 20-35.
+  - Migration is needed at any T below ~65: ~0.01-0.02 moves per lineage per mutation, i.e. ~0.7-0.9 moves/year at T
+    = 20-30. The upper bounds are not informative.
+- **Joint fit.**
+  - T ~ 23-36 and ~0.4 moves/year (0.23-0.72), so ~60% of lineages never moved after localisation.
+  - The two mice differ, so the joint estimate mostly averages them.
+
+- **Simulation-based fit to the chi-squared curve.**
+  - Clustering strength: the synthetic likelihood separates the best cells from no clustering by a similar margin to
+    the exact likelihood (a few log-units). The best cells reproduce the observed chi-squared curve well (tail
+    probability 0.79 for MD7634, 0.74 for MD7635). The very small chi-squared p-values reject one point hypothesis
+    (no clustering), using the most extreme cut-off. That is compatible with a modest likelihood ratio against the
+    high migration rates that mimic no clustering.
+  - Where the signal sits: in MD7634 the chi-squared excess is at cut-offs 10-35, i.e. among lineages that
+    separated **before** the colonisation window. With T inside the window, no rate can generate it, so all rates fit
+    about equally.
+  - MD7634 in the window: high rates are not excluded (relative likelihood of >= 10 moves/year: 0.48 exact, 0.71
+    chi-squared). Taken together, the chi-squared clustering in MD7634 points to localisation before ~35 mutations
+    (T ~ 25-30) with ~0.5-1 moves/year.
+  - MD7635 in the window: the chi-squared curve alone gives relative likelihood 0.06 for >= 10 moves/year and a 95%
+    upper bound of ~1/year. Adding the pair fractions (or using the exact likelihood) tightens this to ~0.2/year.
+  - Validation: the synthetic likelihood has lower power than the exact likelihood, as expected, but coverage stays
+    close to nominal.
+
+## Interpretation and caveats
+
+- **Few lineages separate after late localisation.** The information about migration after a late localisation
+  comes from the few clades that coalesce after T. Late in the tree there are few such clades, so the rate is poorly
+  constrained at large T (wide intervals at the right of the heatmaps).
+- **T and the migration rate trade off.** An early T needs ongoing migration to explain the weak clustering, while a
+  late T needs little or none. Because the molecular time of bone-marrow colonisation is uncertain (non-constant
+  embryonic mutation rate, differences in burden between studies), the results are best read as the rate given T
+  (right-hand heatmaps), not a single number.
+- **Localisation is not instantaneous.** Seeding of the marrow over several days means part of the inferred
+  "migration after T" is late localisation. The inferred rate is therefore an upper bound on true bone-to-bone
+  migration, particularly for T before colonisation is complete.
+- **Simple migration model.** The model has a constant rate, with destinations in proportion to the sampled
+  colonies. Preferential movement between neighbouring bones (femur-tibia, iliac-spine), or a burst of movement
+  around localisation, would look different.
+- **Sampling design.** $\pi$ reflects the sampling design, not the true HSC distribution. MD7635 has only 2 spine
+  colonies.
+- **Tree uncertainty.** Bootstrapping covers branch-length noise, but not errors in topology.

@@ -1,0 +1,5 @@
+"mouse","tree","n_colonies","phi_obs","null_mean","null_95","p_value","permutations"
+"MD7634","pipeline tree (uncorrected)",154,0.5008,0.5,0.5007,0.04,30000
+"MD7634","corrected tree",154,0.501,0.5,0.5011,0.061,30000
+"MD7635","pipeline tree (uncorrected)",133,0.5009,0.5,0.5008,0.04,30000
+"MD7635","corrected tree",133,0.5012,0.5,0.5013,0.053,30000

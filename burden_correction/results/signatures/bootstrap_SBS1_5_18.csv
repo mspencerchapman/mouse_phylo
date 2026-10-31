@@ -1,0 +1,16 @@
+"sample","signature","median","lo","hi"
+"both | private: clonal (MAP)","SBS1",0.217,0.207,0.225
+"both | private: clonal (MAP)","SBS18",0.126,0.117,0.135
+"both | private: clonal (MAP)","SBS5",0.657,0.645,0.669
+"both | private: clonal (P>0.9)","SBS1",0.255,0.244,0.269
+"both | private: clonal (P>0.9)","SBS18",0.118,0.105,0.132
+"both | private: clonal (P>0.9)","SBS5",0.626,0.607,0.642
+"both | private: sub-clonal (MAP)","SBS1",0.058,0.05,0.063
+"both | private: sub-clonal (MAP)","SBS18",0.142,0.129,0.153
+"both | private: sub-clonal (MAP)","SBS5",0.801,0.786,0.816
+"both | private: sub-clonal (P<0.1)","SBS1",0.017,0.01,0.026
+"both | private: sub-clonal (P<0.1)","SBS18",0.147,0.13,0.166
+"both | private: sub-clonal (P<0.1)","SBS5",0.836,0.817,0.854
+"both | shared","SBS1",0.225,0.202,0.254
+"both | shared","SBS18",0.155,0.125,0.182
+"both | shared","SBS5",0.618,0.58,0.654

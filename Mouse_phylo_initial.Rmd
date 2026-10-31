@@ -1,5 +1,7 @@
 ---
 title: "Mouse_phylo_analysis"
+params:
+  sample_ID: "MD7635"
 output: html_document
 date: "2024-06-24"
 ---
@@ -7,8 +9,21 @@ date: "2024-06-24"
 ```{r setup, include=FALSE}
 
 #Need to set these paths for your local setup
-my_working_dir="~/R_work/mouse_phylo_original/"
-gfile=ifelse(Sys.info()['sysname']=="Darwin","~/Mounts/lustre2/reference_files/GRCm38/genome.fa","/lustre/scratch124/casm/team78pipelines/canpipe/live/ref/Mus_musculus/GRCm38/genome.fa")
+my_working_dir="~/R_work/mouse_phylo/"
+#Note: the lustre copy of the reference is no longer mounted; the clonality signature chunk uses cached contexts instead
+gfile=ifelse(Sys.info()['sysname']=="Darwin","~/Mounts/lustre2/reference_files/GRCm38/genome.fa","/nfs/cancer_ref02/Mus_musculus/GRCm38/genome.fa")
+
+plots_dir=paste0(my_working_dir,"plots/")
+
+#Figure files: set resave_plots=FALSE to knit without overwriting the saved PDFs
+resave_plots=TRUE
+dir.create(plots_dir,showWarnings=FALSE,recursive=TRUE)
+save_gg=function(p,name,width,height) if(resave_plots) ggplot2::ggsave(paste0(plots_dir,name,".pdf"),p,width=width,height=height)
+#Base-graphics plots (trees): re-draws the current plot into a PDF; call straight after the plot is finished
+save_base_plot=function(name,width=10,height=5){
+  if(!resave_plots) return(invisible())
+  p=recordPlot(); pdf(paste0(plots_dir,name,".pdf"),width=width,height=height); replayPlot(p); invisible(dev.off())
+}
 
 knitr::opts_knit$set(root.dir = my_working_dir,echo = TRUE)
 
@@ -37,7 +52,28 @@ for(package in bioconductor_packages){
   }
 }
 
+#Detection-aware branch-length correction (see burden_correction/README.md)
+source(paste0(my_working_dir,"burden_correction/R/burden_correction.R"))
+
 #Define custom functions
+#AMOVA permutation test (amova.fn / randamova.fn from my_functions): draws the null histogram, optionally saves it to
+#'file', and returns the observed statistic and p-value (amovapval.fn only plots). p = proportion of permutations >= observed.
+#Note: amova.fn's statistic has a ~0.5 baseline, so only the p-value is interpretable.
+amova_test=function(distmat,cell_key,iterations=30000,plottitle="",file=NULL,seed=20261031){
+  groupnames=unique(cell_key$Cell_type)
+  set.seed(seed)
+  obs=amova.fn(distmat=distmat,groupnames=groupnames,cell_key=cell_key)
+  rnd=sapply(1:iterations,function(i) randamova.fn(distmat=distmat,groupnames=groupnames,cell_key=cell_key))
+  p=mean(rnd>=obs)
+  draw=function(){
+    hist(rnd,col="grey",100,main=plottitle,xlab="AMOVA statistic",xlim=range(c(rnd,obs)))
+    abline(v=obs,col="red",lwd=2)
+    legend("topright",legend=paste0("Observed\n p = ",signif(p,digits=2)),lwd=2,col="red",bty="n")
+  }
+  draw()
+  if(!is.null(file)) {pdf(file,width=5,height=4); draw(); dev.off()}
+  data.frame(n_colonies=nrow(distmat),statistic=obs,null_mean=mean(rnd),p_value=p,iterations=iterations)
+}
 plot_96profile=function(df,colnames=c("sampleID","chr","pos","ref","alt"),genomeFile,title=NULL) {
   require(Rsamtools)
   require(GenomicRanges)
@@ -99,42 +135,13 @@ vaf_density_plot_final=function(sample,tree,COMB_mats,private_only=F){
   text(0.7, max(dens$y) - 0.2, paste("Peak VAF dens=",round(dens$x[which.max(dens$y)], digits = 2)),col="red",cex = 0.7)
 }
 
-binom_mix = function(x,size,nrange=1:3,criterion="BIC",maxit=5000,tol=1e-6){
-  ## Perform the EM algorithm for different numbers of components
-  ## Select best fit using the Bayesian Information Criterion (BIC)
-  ## or the Akaike information criterion (AIC)
-  i=1
-  results = list()
-  BIC_vec = c()
-  AIC_vec = c()
-  
-  for (n in nrange){
-    ## Initialise EM algorithm with values from kmeans clustering
-    init = kmeans(x/size,n)
-    prop_init = init$size/length(x)
-    p_init = init$centers
-    
-    results[[i]] = em.algo(x,size,prop.vector_inits = prop_init,p.vector_inits=p_init,nclust=n,maxit,tol)
-    BIC_vec = c(BIC_vec,results[[i]]$BIC)
-    AIC_vec = c(AIC_vec,results[[i]]$AIC)
-    i=i+1
-  }
-  if (criterion=="BIC"){
-    results[[which.min(BIC_vec)]]$BIC_vec=BIC_vec
-    return(results[[which.min(BIC_vec)]])
-  }
-  if (criterion=="AIC"){
-    return(results[[which.min(AIC_vec)]])
-  }
-}
-
 ```
 
 ## Load in the data for one individual
 
 ```{r load_data}
 knitr::opts_knit$set(root.dir = my_working_dir,echo = TRUE)
-sample_ID="MD7635"
+sample_ID=params$sample_ID #knit for the other mouse with rmarkdown::render(..., params=list(sample_ID="MD7634"))
 load(paste0(my_working_dir,"annotated_muts/annotated_mut_set_",sample_ID,"_postMS_reduced_a_j_vaf_post_mix_post_dup"))
 tree=read.tree(paste0(my_working_dir,"tree_files/tree_",sample_ID,"_postMS_reduced_a_j_vaf_post_mix_post_dup.tree"))
 details<-filtered_muts$COMB_mats.tree.build$mat
@@ -155,9 +162,12 @@ temp=sapply(tree$tip.label,function(sample_ID) plot_category_tip_point(sample_ID
 legend("topleft", inset=c(.01,.01), title="Sample type",
        names(cell_type_colours), fill=cell_type_colours, horiz=F, cex=0.7)
 
-sum(filtered_muts$COMB_mats.tree.build$mat$node%in%1:length(tree$tip.label))
-sum(!filtered_muts$COMB_mats.tree.build$mat$node%in%1:length(tree$tip.label))
+#Print the private and shared mutation burdens
+print(paste("There are",sum(filtered_muts$COMB_mats.tree.build$mat$node%in%1:length(tree$tip.label)),"private mutations."))
+print(paste("There are",sum(!filtered_muts$COMB_mats.tree.build$mat$node%in%1:length(tree$tip.label)),"shared mutations."))
+
 ```
+
 ## Plot trees with tissue source info
 
 In this plot, branches are coloured by the specific tissue colour if all the descendants are from the same tissue.
@@ -242,11 +252,12 @@ cellkey<-sample_level_metadata%>%
 
 distmat <- cophenetic(drop.tip(tree.ultra,"Ancestral"))
 
-amovapval.fn(distmat = distmat,
-             groupnames = unique(cellkey$Cell_type),
-             cell_key = cellkey,
-             iterations = 30000,
-             plottitle = paste0(sample_ID,": Phylogenetic clustering by cell source"))
+amova_res<-amova_test(distmat = distmat,
+                      cell_key = cellkey,
+                      iterations = 30000,
+                      plottitle = paste0(sample_ID,": Phylogenetic clustering by cell source"),
+                      file = if(resave_plots) paste0(plots_dir,sample_ID,"_AMOVA_uncorrected_tree.pdf") else NULL)
+amova_res
 
 ```
 
@@ -261,7 +272,7 @@ Differences may be due to:
 (1) in vitro-acquired mutations that have a different mutational signature \
 (2) differences in in vivo mutational process between mutations acquired early in embryogenesis (these are more likely to be shared) and those acquired later (these are likely to be private)
 
-For reasons explained later, in this case, the differences are likely due to in vitro-acquired mutations in this case.
+For reasons explained later, the differences are likely due to in vitro-acquired mutations in this case. The chunk below needs the reference genome (`gfile`), so it is not run. See 'Mutational signatures of clonal and sub-clonal private mutations' below for the comparison using the clonal/sub-clonal assignment.
 
 ```{r mutational_signatures, eval=FALSE}
 par(mfrow=c(2,1))
@@ -270,9 +281,47 @@ plot_96profile(df = details%>%mutate(sampleID=sample_ID)%>%filter(!node%in%1:len
 
 ```
 
+## Review the VAF histograms of all shared mutations across all positive samples
+
+```{r VAF_plots_shared}
+COMB_mats=filtered_muts$COMB_mats.tree.build
+
+#Concatentate all variant read counts (of private mutations) into single vector
+all_NV_shared<-lapply((length(tree$tip.label)+1):nrow(tree$edge),function(node) {
+  node_samples<-getTips(tree,node=node)
+  node_muts <- COMB_mats$mat$mut_ref[COMB_mats$mat$node %in% node]
+  if(length(node_muts)==0) {
+    stop(return(NULL))
+  } else {
+      COMB_mats$NR[COMB_mats$NR == 0] <- 1
+  return(COMB_mats$NV[node_muts,node_samples])
+    }
+})%>%unlist()
+
+#Concatentate all depth counts into single vector
+all_NR_shared<-lapply((length(tree$tip.label)+1):nrow(tree$edge),function(node)  {
+  node_samples<-getTips(tree,node=node)
+  node_muts <- COMB_mats$mat$mut_ref[COMB_mats$mat$node %in% node]
+  if(length(node_muts)==0) {
+    stop(return(NULL))
+  } else {
+      COMB_mats$NR[COMB_mats$NR == 0] <- 1
+  return(COMB_mats$NR[node_muts,node_samples])
+    }
+})%>%unlist()
+
+#Plot as a density map
+dens <- density(all_NV_shared[all_NR_shared>20]/all_NR_shared[all_NR_shared>20])
+plot(dens,xlim = c(0,1),main=paste0(sample_ID,": all high depth shared mutations"))
+abline(v = dens$x[which.max(dens$y)])
+text(0.7, max(dens$y) - 0.2, paste("Peak VAF dens=",round(dens$x[which.max(dens$y)], digits = 2)),col="red",cex = 0.7)
+
+```
+
+
 ## Look at the VAF density plots of the private mutations in a few individual samples
 
-This chooses the first 16 tips of the tree and looks at the VAF density plots of the private mutations
+Here, we choose the first 16 tips of the tree and looks at the VAF density plots of the private mutations. If all the private mutations were clonal these would all have neat peaks at 0.5.  However, clearly there are significant numbers of sub-clonal mutations that are likely to be in vitro. Note that every private mutation on the tree has NV >= 3 and VAF >= 0.2 (tree-building filter), so the lower part of the sub-clonal peak is cut off, more so at low depth.
 
 ```{r VAF_plots, echo=FALSE,fig.height=12,fig.width=12}
 par(mfrow=c(4,4))
@@ -313,159 +362,149 @@ text(0.7, max(dens$y) - 0.2, paste("Peak VAF dens=",round(dens$x[which.max(dens$
 ```
 
 
-### Now apply a binomial mixture model to the higher depth mutations
+### Separate clonal and sub-clonal private mutations (detection-aware mixture)
 
-This separates the counts into those that are likely clonal (i.e. from a peak with VAF ~0.5)
-and those that are likely sub-clonal (i.e. those with a peak VAF ~0.25 -0.33).
+The VAF plots above show that many private mutations are sub-clonal: they were acquired in the colony after the founder cell (VAF ~0.25) rather than being clonal (VAF ~0.5). Not every clonal mutation is detected either. The previous version of this section fitted a binomial mixture to mutations with depth > 20, then made Bayesian hard calls per mutation and per sample. It is archived in `archive/Mouse_phylo_initial_before_burden_correction.Rmd`. That approach was biased because detection depends on depth:
 
-This is done only with the higher depth mutations where the underlying true clonal fractions can be inferred with greater confidence
+- A private mutation is only on the tree if NV >= 3 and VAF >= 0.2 (tree-building filter). Sub-clonal mutations are therefore lost far more often at low depth, so the depth > 20 mutations (a minority; median colony depth ~17-19x) over-represent them.
+- The apparent "0.33" sub-clonal peak is a ~0.26 component truncated at VAF 0.2.
+- Male X/Y mutations are hemizygous (VAF ~1 at half depth) and were treated as diploid.
 
-This shows that private mutations that were most likely clonal had a more SBS1-like mutational signature than those that were most likely sub-clonal. It also showed that the likely sub-clonal mutations made-up  ~60% of private mutations.
+The correction now used (`burden_correction/`; see its README for the method and a simulation test with known truth) accounts for how mutations reach the tree:
 
-```{r binom_mix_model}
-depth_cutoff=20
-total<-sum(all_NR>depth_cutoff)
-print(total)
-set.seed(15)
-model.out=binom_mix(x=all_NV[all_NR>depth_cutoff],size=all_NR[all_NR>depth_cutoff],nrange=1:4)
+1. The clonal/sub-clonal mixture is fitted *conditional on detection*: beta-binomial clonal and sub-clonal components shared across colonies, a clonal weight per colony, and partial detection of calls with exactly 3 variant reads. X/Y mutations are modelled with twice the VAF.
+2. Clonal sensitivity = the pipeline's germline-SNP sensitivity (recovered from the input tree: tip SNV count / tip edge length) x the probability that a clonal mutation passes the VAF filter at that colony's depth.
+3. Corrected private branch = expected number of detected clonal SNVs / clonal sensitivity. Shared branches are rebuilt from raw SNV counts and divided by the probability that at least one descendant colony detects a mutation.
 
-clonal_clusters=which.min(abs(model.out$p-0.5))
-  
-if(any(model.out$p>model.out$p[clonal_clusters])) {
-    clonal_clusters<-c(clonal_clusters,which(model.out$p>model.out$p[clonal_clusters]))
+In simulations this is within +-2% of the true clonal burden. The previous hard-call correction underestimated it by 8-27%, depending on depth. The correction uses SNVs only, because the trees were built from SNVs. The fit is saved in `burden_correction/results/` and reloaded if present.
+
+Each private SNV also gets a posterior probability of being clonal, P(clonal), from the fitted mixture and its colony's clonal weight. Detection terms cancel for a single detected mutation, so this probability is valid at any depth. Hard calls are uncertain at low depth, though. For that reason the burden correction sums the probabilities rather than counting hard calls.
+
+```{r burden_correction}
+bc_file=paste0(my_working_dir,"burden_correction/results/burden_correction_",sample_ID,".Rds")
+if(file.exists(bc_file)) {
+  bc=readRDS(bc_file)
+} else {
+  bc=correct_branch_lengths(tree=read.tree(paste0(my_working_dir,"tree_files/tree_",sample_ID,"_postMS_reduced_a_j_vaf_post_mix_post_dup.tree")),
+                            COMB_mats=filtered_muts$COMB_mats.tree.build,sex="male")
 }
 
-if(any(model.out$p<model.out$p[clonal_clusters[1]])) {
-  subclonal_clusters=which(model.out$p<model.out$p[clonal_clusters[1]])
-}
+#Fitted global parameters
+data.frame(clonal_VAF=unname(bc$fit$pc),subclonal_VAF=unname(bc$fit$ps),rho_clonal=bc$fit$rho[1],rho_subclonal=bc$fit$rho[2],
+           detection_NV3=bc$fit$delta[1],detection_NV4=bc$fit$delta[2])%>%signif(3)
 
-clonal_mut_refs=names(all_NR)[all_NR>depth_cutoff][which(model.out$Which_cluster%in%clonal_clusters)]
-subclonal_mut_refs=names(all_NR)[all_NR>depth_cutoff][which(model.out$Which_cluster%in%subclonal_clusters)]
+#Per-mutation assignments
+priv<-bc$priv%>%
+  mutate(vaf_adj=NV/NR/cf, #X/Y VAFs halved so that they are on the diploid scale
+         assignment=ifelse(p_clonal>0.5,"clonal","sub-clonal"),
+         confidence=case_when(p_clonal>0.9~"clonal (P>0.9)",p_clonal<0.1~"sub-clonal (P<0.1)",TRUE~"uncertain"))
 
-print(paste(length(clonal_mut_refs),"mutations of",total,"are likely clonal"))
-print(paste(length(subclonal_mut_refs),"mutations of",total,"are likely sub-clonal"))
+data.frame(private_SNVs=nrow(priv),
+           expected_clonal=round(sum(priv$p_clonal)),
+           expected_subclonal=round(sum(1-priv$p_clonal)),
+           MAP_clonal=sum(priv$assignment=="clonal"),
+           MAP_subclonal=sum(priv$assignment=="sub-clonal"),
+           confident_clonal=sum(priv$p_clonal>0.9),
+           confident_subclonal=sum(priv$p_clonal<0.1))
 
-#Given this what are the likely number of true muts amongst all mutations
-nclonal<-round(length(all_NR) * length(clonal_mut_refs)/total)
-nsubclonal<-round(length(all_NR) * length(subclonal_mut_refs)/total)
+#VAF distribution of private SNVs, coloured by assignment confidence
+vaf_by_depth_plot<-priv%>%
+  mutate(depth=cut(NR,c(0,10,15,20,30,Inf),labels=c("<=10x","11-15x","16-20x","21-30x",">30x")))%>%
+  ggplot(aes(x=vaf_adj,fill=factor(confidence,levels=c("sub-clonal (P<0.1)","uncertain","clonal (P>0.9)"))))+
+  geom_histogram(binwidth=0.025,boundary=0)+
+  geom_vline(xintercept=c(bc$fit$ps,bc$fit$pc),linetype=2)+
+  geom_vline(xintercept=bc$fit$min_vaf,col="red",linetype=3)+
+  facet_wrap(~depth,scales="free_y",nrow=1)+
+  scale_fill_manual(values=c("#D55E00","grey70","#0072B2"))+
+  theme_classic()+theme(legend.position="bottom")+
+  labs(x="VAF (X/Y halved)",y="Private SNVs",fill=NULL,
+       title=paste0(sample_ID,": private SNVs by depth (dashed: fitted VAFs; red: VAF filter)"))
+vaf_by_depth_plot
+save_gg(vaf_by_depth_plot,paste0(sample_ID,"_private_VAF_by_depth"),width=11,height=3.5)
 
-plot_signatures=F
-if(plot_signatures) {
-  plot_96profile_mutref(clonal_mut_refs,genomeFile = gfile,title="Clonal mutations")
-  plot_96profile_mutref(subclonal_mut_refs,genomeFile = gfile,title="Probable sub-clonal mutations")
-}
+#Distribution of P(clonal)
+p_clonal_plot<-priv%>%
+  ggplot(aes(x=p_clonal))+
+  geom_histogram(binwidth=0.025,boundary=0,fill="grey50")+
+  theme_classic()+
+  labs(x="P(clonal)",y="Private SNVs",title=paste0(sample_ID,": posterior probability of being clonal"))
+p_clonal_plot
+save_gg(p_clonal_plot,paste0(sample_ID,"_private_P_clonal"),width=4,height=3)
+
+#Per-colony clonal weight against depth
+bc$samples%>%
+  ggplot(aes(x=median_depth,y=w_clonal))+
+  geom_point(size=1)+
+  theme_classic()+
+  labs(x="Median depth at private sites",y="Clonal weight (true-space fraction)",title=paste0(sample_ID,": clonal fraction of private SNVs per colony"))
 ```
 
-### Try applying the binomial mixture model to private mutations from each sample individually
+### Mutational signatures of clonal and sub-clonal private mutations
 
-The challenge here is that there may not be enough mutations in many cases. But lets see how it performs.
+If sub-clonal private mutations are acquired in culture, their signature should differ from in vivo mutations. Shared mutations are the in vivo reference. Contexts come from the cache made by `burden_correction/signatures_by_clonality.R`. That script fetches them from the GRCm38 reference on the farm and also does the fits and bootstraps for both mice together.
 
-```{r branch_level_clonality_analysis}
+Each set is shown three ways:
+- **weighted:** every mutation counts in proportion to P(clonal) or 1 - P(clonal);
+- **most likely assignment (MAP);**
+- **high confidence:** P > 0.9 or P < 0.1.
 
-all_individual_binom_mix<-lapply(head(tree$tip.label,-1),function(sample) {
-  node <- which(tree$tip.label==sample)
-  sample_muts <- COMB_mats$mat$mut_ref[COMB_mats$mat$node %in% node]
-  COMB_mats$NR[COMB_mats$NR == 0] <- 1
-  sample_NV=COMB_mats$NV[sample_muts,sample]
-  sample_NR=COMB_mats$NR[sample_muts,sample]
-  
-  plot=F
-  if(plot) {
-    dens <- density(sample_NV/sample_NR)
-    plot(dens,xlim = c(0,1),main=paste0(sample,": all private mutations"))
-    abline(v = dens$x[which.max(dens$y)])
-    text(0.7, max(dens$y) - 0.2, paste("Peak VAF dens=",round(dens$x[which.max(dens$y)], digits = 2)),col="red",cex = 0.7)
-  }
-  
+```{r signatures_by_clonality,fig.height=12,fig.width=12}
+ctx_file=paste0(my_working_dir,"burden_correction/results/signatures/contexts.Rds")
+if(!file.exists(ctx_file)) stop("Run burden_correction/signatures_by_clonality.R first to fetch the trinucleotide contexts")
+ctx=readRDS(ctx_file)
 
-  model.out=binom_mix(x=sample_NV,size=sample_NR,nrange=1:4)
-  
-  clonal_clusters=which.min(abs(model.out$p-0.5))
-  
-  if(any(model.out$p>model.out$p[clonal_clusters])) {
-    clonal_clusters<-c(clonal_clusters,which(model.out$p>model.out$p[clonal_clusters]))
-  }
-  
-  if(clonal_clusters[1]==which.min(model.out$p)) {
-    subclonal_cluster<-NULL
-    subclonal_mut_refs<-NULL
-  } else {
-    subclonal_cluster=which.min(model.out$p)
-    subclonal_mut_refs=sample_muts[which(model.out$Which_cluster==subclonal_cluster)]
-  }
-  
-  clonal_mut_refs=sample_muts[which(model.out$Which_cluster%in%clonal_clusters)]
-  return(list(clonal_mut_refs=clonal_mut_refs,
-              subclonal_mut_refs=subclonal_mut_refs))
+#96-channel classification (pyrimidine reference, MutationalPatterns order)
+comp=c(A="T",C="G",G="C",T="A")
+rc=function(x) sapply(strsplit(x,""),function(b) paste(rev(comp[b]),collapse=""))
+classify=function(mut_ref,tri){p=do.call(rbind,strsplit(mut_ref,"-")); ref=p[,3]; alt=p[,4]
+  flip=ref%in%c("G","A"); tri2=ifelse(flip,rc(tri),tri); ref2=ifelse(flip,comp[ref],ref); alt2=ifelse(flip,comp[alt],alt)
+  paste0(substr(tri2,1,1),"[",ref2,">",alt2,"]",substr(tri2,3,3))}
+channels=MutationalPatterns:::TRIPLETS_96
+ctx$channel=classify(ctx$mut_ref,ctx$tri)
 
-})
+shared_snvs=details%>%filter(Mut_type=="SNV" & !node%in%1:length(tree$tip.label))%>%pull(mut_ref)
+sets=bind_rows(data.frame(mut_ref=shared_snvs,set="shared",w=1),
+               priv%>%transmute(mut_ref,set="clonal (weighted)",w=p_clonal),
+               priv%>%transmute(mut_ref,set="sub-clonal (weighted)",w=1-p_clonal),
+               priv%>%filter(p_clonal>0.5)%>%transmute(mut_ref,set="clonal (MAP)",w=1),
+               priv%>%filter(p_clonal<=0.5)%>%transmute(mut_ref,set="sub-clonal (MAP)",w=1),
+               priv%>%filter(p_clonal>0.9)%>%transmute(mut_ref,set="clonal (P>0.9)",w=1),
+               priv%>%filter(p_clonal<0.1)%>%transmute(mut_ref,set="sub-clonal (P<0.1)",w=1))%>%
+  left_join(ctx%>%dplyr::select(mut_ref,channel),by="mut_ref")
+if(any(is.na(sets$channel))) stop("Contexts missing for some mutations: rerun burden_correction/signatures_by_clonality.R")
+set_levels=unique(sets$set)
+M=sapply(set_levels,function(s) {x=sets%>%filter(set==s); tapply(x$w,factor(x$channel,levels=channels),sum,default=0)})
 
-#This classifies the majority as likely clonal - but not sure I trust this as individually many of the 'clonal' peaks are well below 0.5
-all_clonal_muts<-unlist(lapply(all_individual_binom_mix,function(list) {return(list$clonal_mut_refs)}))
-all_sub_clonal_muts<-unlist(lapply(all_individual_binom_mix,function(list) {return(list$subclonal_mut_refs)}))
+#Restricted fit to signatures seen in HSCs and in culture, C>T at CpG (SBS1 hallmark) and similarity to shared mutations
+sigs=get_known_signatures(muttype="snv",source="COSMIC",genome="mm10"); rownames(sigs)=channels
+fit=fit_to_signatures(M,sigs[,c("SBS1","SBS5","SBS18")])$contribution
+cpg=grepl("\\[C>T\\]G",channels)
+data.frame(set=set_levels,n=round(colSums(M)),
+           CpG_CtoT=round(colSums(M[cpg,])/colSums(M),3),
+           round(t(fit)/colSums(fit),3),
+           cos_to_shared=round(apply(M,2,function(x) cos_sim(x,M[,"shared"])),3),row.names=NULL)
 
-#Alternatively use a Bayesian approach to classify individual mutations
-#1. Take the clonal vs subclonal proportions from the high coverage muts as the prior likelihoods
-#.  i.e. clonal proportion = 1545/3893 for MD7634
-
-clonal_prob_prior=length(clonal_mut_refs)/total
-subclonal_prob_prior=length(subclonal_mut_refs)/total
-
-decisions_df<-lapply(1:length(all_NR),function(i) {
-  clonal_prob=clonal_prob_prior*dbinom(x=all_NV[i],size=all_NR[i],prob=0.5) #The binomial prob for a clonal mutation
-  subclonal_prob=subclonal_prob_prior*dbinom(x=all_NV[i],size=all_NR[i],prob=0.33) #The approximate prob for the subclonal mutations is 0.33 according to the binomial mixture model
-  
-  clonal_prob_norm=clonal_prob/(clonal_prob+subclonal_prob)
-  sub_prob_norm=subclonal_prob/(clonal_prob+subclonal_prob)
-  data.frame(mut_ref=names(all_NR)[i],
-             clonal_prob=clonal_prob_norm,
-             subclonal_prob=sub_prob_norm,
-             decision=ifelse(clonal_prob>subclonal_prob,"clonal","sub-clonal"))
-})%>%dplyr::bind_rows()
-
-decisions_df$sample<-sapply(decisions_df$mut_ref,function(mut) {
-  mut_node<-COMB_mats$mat%>%filter(mut_ref==mut)%>%pull(node)
-  return(tree$tip.label[mut_node])
-})
-
-table(decisions_df$decision)
+signature_plot<-plot_96_profile(M[,c("shared","clonal (P>0.9)","clonal (weighted)","sub-clonal (weighted)","sub-clonal (P<0.1)")],ymax=0.1,condensed=TRUE)
+signature_plot
+save_gg(signature_plot,paste0(sample_ID,"_signatures_by_clonality"),width=12,height=10)
 ```
+
+Clonal private mutations have almost the same profile as shared mutations: SBS1-rich, with peaks of C>T at CpG. Sub-clonal ones are depleted of SBS1 and dominated by non-CpG C>T spread across contexts. The separation grows with assignment confidence, which supports the mixture classification. This fits sub-clonal mutations being acquired in culture, although low-VAF artefacts would look similar. Both mice show the same pattern; see `burden_correction/README.md` for the combined fits and bootstrap intervals.
 
 ### Using these corrected mutation burdens
 
+The corrected private branch is the expected number of clonal SNVs, P(clonal) summed over the colony's private SNVs, divided by the colony's clonal sensitivity. Shared branches are corrected for sensitivity only. Corrected total burdens are 91.9 for MD7634 (standard error of the mean 1.5) and 79.8 for MD7635 (SEM 2.0); corrected private burdens are 61.9 and 53.3. These replace the earlier estimates, which are not comparable: uniform correction 69.9 / 66.6, sample-specific correction 76.5 / 70.4. The mice differ mainly through caller sensitivity (median 0.84 vs 0.92) and the sub-clonal fraction. Burdens differ little between tissues (MD7634: iliac slightly lower, Kruskal-Wallis p = 0.011 for private burden; MD7635: p = 0.2).
+
 ```{r private_branch_correction}
-correction_factor<-sapply(head(tree$tip.label,-1),function(sampleID) {
-  decisions_df%>%filter(sample==sampleID)%>%
-    summarise(prop_clonal=sum(decision=="clonal")/nrow(.))%>%unlist()
-})
-uniform_correction_factor<-rep(length(clonal_mut_refs)/total,length(correction_factor))
-names(correction_factor)<-names(uniform_correction_factor)<-head(tree$tip.label,-1)
-
-#Choose the method to correct the private branch lengths
-correction_method="sample-specific" #other option is "uniform"
-
-tree.corrected<-tree
-tree.corrected$edge.length<-sapply(tree$edge[,2],function(node) {
-  original_edge_length<-tree$edge.length[tree$edge[,2]==node]
-  if(!node %in% 1:length(tree$tip.label)) {
-    return(original_edge_length)
-  } else {
-    sampleID<-tree$tip.label[node]
-    if(sampleID=="Ancestral") {
-      return(0)
-    } else {
-      if(correction_method=="sample_specific") {
-        new_edge_length<-original_edge_length*correction_factor[sampleID]
-      } else if(correction_method=="uniform") {
-        new_edge_length<-original_edge_length*uniform_correction_factor[sampleID]
-      }
-      return(new_edge_length)
-    }
-  }
-})
+#Per-sample: observed private SNVs, clonal weight, sensitivity and corrected burdens
+mut_burden_df<-bc$samples%>%
+  left_join(sample_level_metadata,by=c("sample"="INTERNAL_CASM_SAMPLE_NAME"))%>%
+  dplyr::rename(sampleID=sample,mut_burden=total_burden)
+mut_burden_df%>%dplyr::select(sampleID,TISSUE_PHENOTYPE,n_obs,w_clonal,caller_sensitivity,sensitivity,N_clonal,shared_burden,mut_burden)%>%
+  mutate(across(where(is.numeric),~round(.x,2)))%>%head()
 
 #Plot the tree with the corrected burdens
-tree.corrected$coords<-NULL
+tree.corrected<-bc$tree
 tree.corrected=plot_tree(tree = tree.corrected,cex.label=0,title = sample_ID)
 temp=sapply(tree.corrected$tip.label,function(sample_ID) plot_category_tip_point(sample_ID = sample_ID,
                                                                   tree=tree.corrected,
@@ -478,21 +517,35 @@ legend("topleft", inset=c(.01,.01), title="Sample type",
        names(cell_type_colours), fill=cell_type_colours, horiz=F, cex=0.7)
 
 ## From this, look at the mutation burdens
-#Create a dataframe including burden, sample name and tissue type
-mut_burden_df<-data.frame(sampleID=tree.corrected$tip.label,mut_burden=get_mut_burden(tree.corrected))%>%
-  filter(!sampleID=="Ancestral")%>%
-  left_join(sample_level_metadata,by=c("sampleID"="INTERNAL_CASM_SAMPLE_NAME"))
-
-
 #Overall mean mutation burden
-print(paste("Mean burden is",mean(mut_burden_df$mut_burden)))
-print(paste("The standard error of the mean is:",sd(mut_burden_df$mut_burden)/sqrt(nrow(mut_burden_df))))
+print(paste("Mean burden is",round(mean(mut_burden_df$mut_burden),1)))
+print(paste("The standard error of the mean is:",round(sd(mut_burden_df$mut_burden)/sqrt(nrow(mut_burden_df)),2)))
 
 #Summarise mean burdens per tissue of origin
 mut_burden_df%>%
   group_by(TISSUE_PHENOTYPE)%>%
-  summarise(n_samples=n(),mean_burden=mean(mut_burden),median_burden=median(mut_burden))%>%
+  summarise(n_samples=n(),mean_private_observed=mean(n_obs),mean_private_corrected=mean(N_clonal),
+            mean_burden=mean(mut_burden),median_burden=median(mut_burden))%>%
   print()
+kruskal.test(N_clonal~TISSUE_PHENOTYPE,data=mut_burden_df)
+
+#Observed vs corrected private burdens
+mut_burden_df%>%
+  ggplot(aes(x=n_obs,y=N_clonal,col=TISSUE_PHENOTYPE))+
+  geom_point(size=1)+
+  geom_abline(linetype=2)+
+  scale_color_manual(values=cell_type_colours)+
+  theme_classic()+
+  labs(col="Tissue",x="Observed private SNVs",y="Corrected clonal private burden",title = sample_ID)
+
+#Corrected private burden should not depend on depth
+mut_burden_df%>%
+  ggplot(aes(x=median_depth,y=N_clonal,col=TISSUE_PHENOTYPE))+
+  geom_point(size=1)+
+  scale_color_manual(values=cell_type_colours)+
+  theme_classic()+
+  labs(col="Tissue",x="Median depth at private sites",y="Corrected clonal private burden",
+       title=paste0(sample_ID,": Spearman rho = ",round(cor(mut_burden_df$median_depth,mut_burden_df$N_clonal,method="spearman"),2)))
 
 #Plot a histogram of the burdens, separated by tissue type
 mut_burden_df%>%
@@ -500,12 +553,16 @@ mut_burden_df%>%
   geom_histogram(col="black",linewidth=0.2)+
   scale_fill_manual(values=cell_type_colours)+
   theme_classic()+
-  scale_x_continuous(limits=c(0,160))+
-  labs(fill="Tissue",x="Mutation burden",title = sample_ID)
+  coord_cartesian(xlim=c(0,200))+
+  labs(fill="Tissue",x="Corrected mutation burden",title = sample_ID)
 
 ```
 
 ### Make a new ultrametric tree with the corrected mutation burdens
+
+This uses the 'make.ultrametric.tree' function which is an iteratively reweighted means algorithm to scale the total sample heights all to a height of 1. We then rescale them to the mean mutation burden across samples. This gives an ultrametric tree that is still scaled to 'molecular time' (i.e. number of mutations). \
+
+You can then look for phylogenetic clustering by tissue using AMOVA.
 
 ```{r corrected_ultrametric_tree}
 tree.corrected.ultra=make.ultrametric.tree(tree.corrected)
@@ -542,11 +599,12 @@ cellkey<-sample_level_metadata%>%
 
 distmat <- cophenetic(drop.tip(tree.corrected.ultra,"Ancestral"))
 
-amovapval.fn(distmat = distmat,
-             groupnames = unique(cellkey$Cell_type),
-             cell_key = cellkey,
-             iterations = 30000,
-             plottitle = paste0(sample_ID,": Phylogenetic clustering by cell source:\ncorrected ultrametric tree"))
+amova_res<-amova_test(distmat = distmat,
+                      cell_key = cellkey,
+                      iterations = 30000,
+                      plottitle = paste0(sample_ID,": Phylogenetic clustering by cell source:\ncorrected ultrametric tree"),
+                      file = if(resave_plots) paste0(plots_dir,sample_ID,"_AMOVA_corrected_tree.pdf") else NULL)
+amova_res
 
 ```
 
@@ -584,12 +642,12 @@ if(rewrite) {
 
 ```
 
-### Option 2: Shared mutations + likely clonal mutations + 10 x complete mutation sets
+### Option 2: Shared mutations + likely clonal mutations + 15 x complete mutation sets
 Create a csv file of more selected mutations from both mice.
 These includes:
 1) All shared mutations
 2) Private mutations identified as most likely to be clonal (those with a VAF>0.45 and with depth > 15X)
-3) All private mutations from a selected subset of samples (15 in the end)
+3) All private mutations from a selected subset of samples (15 per mouse)
 
 ```{r mutlist2,eval=FALSE}
 knitr::opts_knit$set(root.dir = my_working_dir,echo = TRUE)

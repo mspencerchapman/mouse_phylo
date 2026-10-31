@@ -1,0 +1,294 @@
+MD7634 : depth 91.3 | scale 1.289 | calibrated window unscaled 36.6 49.1 scaled 47.2 63.2 
+MD7634 : max logL -210.03 | no clustering -213.11 | best with no migration -213.11 at T = 74 
+MD7635 : depth 79.2 | scale 1.118 | calibrated window unscaled 36.6 49.1 scaled 40.9 54.9 
+MD7635 : max logL -141.82 | no clustering -153.49 | best with no migration -147.21 at T = 43 
+  mouse             tree             prior_T          quantity     q2.5
+ MD7634       point_tree            T_1_to_D                 T 5.00e+00
+ MD7634       point_tree            T_1_to_D         move_rate 0.00e+00
+ MD7634       point_tree            T_1_to_D moves_per_lineage 0.00e+00
+ MD7634       point_tree            T_1_to_D     p_never_moved 3.05e-44
+ MD7634       point_tree           T_5_to_50                 T 7.00e+00
+ MD7634       point_tree           T_5_to_50         move_rate 8.40e-03
+ MD7634       point_tree           T_5_to_50 moves_per_lineage 4.58e-01
+ MD7634       point_tree           T_5_to_50     p_never_moved 7.89e-55
+ MD7634       point_tree calibrated_unscaled                 T 3.70e+01
+ MD7634       point_tree calibrated_unscaled         move_rate 6.67e-03
+ MD7634       point_tree calibrated_unscaled moves_per_lineage 2.89e-01
+ MD7634       point_tree calibrated_unscaled     p_never_moved 4.29e-45
+ MD7634       point_tree calibrated_unscaled     years_since_T 4.82e-01
+ MD7634       point_tree calibrated_unscaled    moves_per_year 5.85e-01
+ MD7634       point_tree   calibrated_scaled                 T 4.80e+01
+ MD7634       point_tree   calibrated_scaled         move_rate 2.66e-03
+ MD7634       point_tree   calibrated_scaled moves_per_lineage 9.04e-02
+ MD7634       point_tree   calibrated_scaled     p_never_moved 4.29e-33
+ MD7634       point_tree   calibrated_scaled     years_since_T 4.85e-01
+ MD7634       point_tree   calibrated_scaled    moves_per_year 1.80e-01
+ MD7634 tree_uncertainty            T_1_to_D                 T 5.00e+00
+ MD7634 tree_uncertainty            T_1_to_D         move_rate 0.00e+00
+ MD7634 tree_uncertainty            T_1_to_D moves_per_lineage 0.00e+00
+ MD7634 tree_uncertainty            T_1_to_D     p_never_moved 3.76e-43
+ MD7634 tree_uncertainty           T_5_to_50                 T 7.00e+00
+ MD7634 tree_uncertainty           T_5_to_50         move_rate 7.49e-03
+ MD7634 tree_uncertainty           T_5_to_50 moves_per_lineage 3.99e-01
+ MD7634 tree_uncertainty           T_5_to_50     p_never_moved 4.44e-54
+ MD7634 tree_uncertainty calibrated_unscaled                 T 3.70e+01
+ MD7634 tree_uncertainty calibrated_unscaled         move_rate 5.30e-03
+ MD7634 tree_uncertainty calibrated_unscaled moves_per_lineage 2.35e-01
+ MD7634 tree_uncertainty calibrated_unscaled     p_never_moved 3.05e-44
+ MD7634 tree_uncertainty calibrated_unscaled     years_since_T 4.82e-01
+ MD7634 tree_uncertainty calibrated_unscaled    moves_per_year 4.69e-01
+ MD7634 tree_uncertainty   calibrated_scaled                 T 4.80e+01
+ MD7634 tree_uncertainty   calibrated_scaled         move_rate 1.06e-03
+ MD7634 tree_uncertainty   calibrated_scaled moves_per_lineage 3.52e-02
+ MD7634 tree_uncertainty   calibrated_scaled     p_never_moved 3.54e-32
+ MD7634 tree_uncertainty   calibrated_scaled     years_since_T 4.85e-01
+ MD7634 tree_uncertainty   calibrated_scaled    moves_per_year 6.96e-02
+ MD7635       point_tree            T_1_to_D                 T 2.80e+01
+ MD7635       point_tree            T_1_to_D         move_rate 0.00e+00
+ MD7635       point_tree            T_1_to_D moves_per_lineage 0.00e+00
+ MD7635       point_tree            T_1_to_D     p_never_moved 6.33e-01
+ MD7635       point_tree           T_5_to_50                 T 2.80e+01
+ MD7635       point_tree           T_5_to_50         move_rate 0.00e+00
+ MD7635       point_tree           T_5_to_50 moves_per_lineage 0.00e+00
+ MD7635       point_tree           T_5_to_50     p_never_moved 6.33e-01
+ MD7635       point_tree calibrated_unscaled                 T 3.70e+01
+ MD7635       point_tree calibrated_unscaled         move_rate 0.00e+00
+ MD7635       point_tree calibrated_unscaled moves_per_lineage 0.00e+00
+ MD7635       point_tree calibrated_unscaled     p_never_moved 7.42e-01
+ MD7635       point_tree calibrated_unscaled     years_since_T 4.82e-01
+ MD7635       point_tree calibrated_unscaled    moves_per_year 0.00e+00
+ MD7635       point_tree   calibrated_scaled                 T 4.20e+01
+ MD7635       point_tree   calibrated_scaled         move_rate 0.00e+00
+ MD7635       point_tree   calibrated_scaled moves_per_lineage 0.00e+00
+ MD7635       point_tree   calibrated_scaled     p_never_moved 8.20e-01
+ MD7635       point_tree   calibrated_scaled     years_since_T 5.02e-01
+ MD7635       point_tree   calibrated_scaled    moves_per_year 0.00e+00
+ MD7635 tree_uncertainty            T_1_to_D                 T 2.70e+01
+ MD7635 tree_uncertainty            T_1_to_D         move_rate 0.00e+00
+ MD7635 tree_uncertainty            T_1_to_D moves_per_lineage 0.00e+00
+ MD7635 tree_uncertainty            T_1_to_D     p_never_moved 6.59e-01
+ MD7635 tree_uncertainty           T_5_to_50                 T 2.70e+01
+ MD7635 tree_uncertainty           T_5_to_50         move_rate 0.00e+00
+ MD7635 tree_uncertainty           T_5_to_50 moves_per_lineage 0.00e+00
+ MD7635 tree_uncertainty           T_5_to_50     p_never_moved 6.59e-01
+ MD7635 tree_uncertainty calibrated_unscaled                 T 3.70e+01
+ MD7635 tree_uncertainty calibrated_unscaled         move_rate 0.00e+00
+ MD7635 tree_uncertainty calibrated_unscaled moves_per_lineage 0.00e+00
+ MD7635 tree_uncertainty calibrated_unscaled     p_never_moved 8.43e-01
+ MD7635 tree_uncertainty calibrated_unscaled     years_since_T 5.01e-01
+ MD7635 tree_uncertainty calibrated_unscaled    moves_per_year 0.00e+00
+ MD7635 tree_uncertainty   calibrated_scaled                 T 4.10e+01
+ MD7635 tree_uncertainty   calibrated_scaled         move_rate 0.00e+00
+ MD7635 tree_uncertainty   calibrated_scaled moves_per_lineage 0.00e+00
+ MD7635 tree_uncertainty   calibrated_scaled     p_never_moved 8.94e-01
+ MD7635 tree_uncertainty   calibrated_scaled     years_since_T 5.03e-01
+ MD7635 tree_uncertainty   calibrated_scaled    moves_per_year 0.00e+00
+      q10      q50      q90    q97.5 P_no_migration
+ 1.70e+01 5.10e+01 8.60e+01 9.00e+01         0.1760
+ 0.00e+00 1.88e-02 8.40e-01 1.88e+00         0.1760
+ 0.00e+00 9.91e-01 3.41e+01 1.00e+02         0.1760
+ 1.56e-15 3.71e-01 1.00e+00 1.00e+00         0.1760
+ 1.30e+01 2.60e+01 4.40e+01 4.90e+01         0.0000
+ 1.06e-02 2.37e-02 9.43e-01 1.88e+00         0.0000
+ 6.53e-01 1.57e+00 5.85e+01 1.25e+02         0.0000
+ 3.90e-26 2.08e-01 5.20e-01 6.32e-01         0.0000
+ 3.80e+01 4.30e+01 4.90e+01 4.90e+01         0.0000
+ 1.19e-02 1.06e-01 1.33e+00 2.11e+00         0.0000
+ 5.74e-01 4.84e+00 6.33e+01 1.02e+02         0.0000
+ 3.32e-28 7.93e-03 5.63e-01 7.49e-01         0.0000
+ 4.82e-01 5.05e-01 5.10e-01 5.11e-01         0.0000
+ 1.15e+00 9.55e+00 1.26e+02 2.05e+02         0.0000
+ 4.90e+01 5.50e+01 6.10e+01 6.30e+01         0.0000
+ 6.67e-03 7.49e-02 1.19e+00 2.11e+00         0.0000
+ 2.42e-01 2.56e+00 4.38e+01 7.45e+01         0.0000
+ 9.52e-20 7.75e-02 7.85e-01 9.14e-01         0.0000
+ 5.01e-01 5.05e-01 5.10e-01 5.10e-01         0.0000
+ 4.83e-01 5.05e+00 8.75e+01 1.48e+02         0.0000
+ 1.70e+01 5.00e+01 8.60e+01 9.00e+01         0.1700
+ 0.00e+00 1.68e-02 8.40e-01 1.88e+00         0.1700
+ 0.00e+00 9.31e-01 3.21e+01 9.77e+01         0.1700
+ 1.11e-14 3.94e-01 1.00e+00 1.00e+00         0.1700
+ 1.30e+01 2.70e+01 4.40e+01 4.90e+01         0.0000
+ 9.43e-03 2.11e-02 8.40e-01 1.88e+00         0.0000
+ 6.06e-01 1.43e+00 5.50e+01 1.23e+02         0.0000
+ 1.34e-24 2.40e-01 5.45e-01 6.71e-01         0.0000
+ 3.70e+01 4.30e+01 4.80e+01 4.90e+01         0.0000
+ 9.43e-03 5.30e-02 1.19e+00 2.11e+00         0.0000
+ 4.46e-01 2.46e+00 5.62e+01 1.00e+02         0.0000
+ 4.11e-25 8.58e-02 6.40e-01 7.91e-01         0.0000
+ 5.00e-01 5.05e-01 5.11e-01 5.11e-01         0.0000
+ 8.79e-01 4.86e+00 1.11e+02 1.98e+02         0.0000
+ 4.90e+01 5.50e+01 6.10e+01 6.30e+01         0.0000
+ 3.34e-03 4.21e-02 1.06e+00 2.11e+00         0.0000
+ 1.25e-01 1.48e+00 3.95e+01 7.24e+01         0.0000
+ 7.23e-18 2.28e-01 8.83e-01 9.65e-01         0.0000
+ 5.01e-01 5.05e-01 5.10e-01 5.10e-01         0.0000
+ 2.47e-01 2.95e+00 7.81e+01 1.43e+02         0.0000
+ 3.00e+01 3.10e+01 3.40e+01 4.40e+01         0.0397
+ 1.34e-03 3.37e-03 6.73e-03 9.50e-03         0.0397
+ 6.34e-02 1.66e-01 3.24e-01 4.58e-01         0.0397
+ 7.23e-01 8.47e-01 9.39e-01 1.00e+00         0.0397
+ 3.00e+01 3.10e+01 3.40e+01 4.40e+01         0.0360
+ 1.34e-03 3.37e-03 6.73e-03 9.50e-03         0.0360
+ 6.34e-02 1.66e-01 3.24e-01 4.58e-01         0.0360
+ 7.23e-01 8.47e-01 9.39e-01 1.00e+00         0.0360
+ 3.80e+01 4.30e+01 4.60e+01 4.90e+01         0.4870
+ 0.00e+00 2.39e-04 3.78e-03 7.55e-03         0.4870
+ 0.00e+00 8.64e-03 1.42e-01 2.98e-01         0.4870
+ 8.67e-01 9.91e-01 1.00e+00 1.00e+00         0.4870
+ 5.02e-01 5.05e-01 5.10e-01 5.11e-01         0.4870
+ 0.00e+00 1.72e-02 2.79e-01 5.92e-01         0.4870
+ 4.30e+01 4.40e+01 4.90e+01 5.20e+01         0.7560
+ 0.00e+00 0.00e+00 1.34e-03 5.99e-03         0.7560
+ 0.00e+00 0.00e+00 4.72e-02 1.99e-01         0.7560
+ 9.54e-01 1.00e+00 1.00e+00 1.00e+00         0.7560
+ 5.04e-01 5.08e-01 5.09e-01 5.10e-01         0.7560
+ 0.00e+00 0.00e+00 9.29e-02 3.90e-01         0.7560
+ 2.90e+01 3.40e+01 4.10e+01 4.50e+01         0.2380
+ 0.00e+00 2.13e-03 5.99e-03 8.47e-03         0.2380
+ 0.00e+00 9.62e-02 2.77e-01 4.17e-01         0.2380
+ 7.58e-01 9.08e-01 1.00e+00 1.00e+00         0.2380
+ 2.90e+01 3.40e+01 4.10e+01 4.40e+01         0.2350
+ 0.00e+00 2.13e-03 5.99e-03 8.47e-03         0.2350
+ 0.00e+00 9.62e-02 2.77e-01 4.17e-01         0.2350
+ 7.58e-01 9.08e-01 1.00e+00 1.00e+00         0.2350
+ 3.80e+01 4.00e+01 4.30e+01 4.70e+01         0.7380
+ 0.00e+00 0.00e+00 1.51e-03 4.24e-03         0.7380
+ 0.00e+00 0.00e+00 5.66e-02 1.71e-01         0.7380
+ 9.45e-01 1.00e+00 1.00e+00 1.00e+00         0.7380
+ 5.05e-01 5.08e-01 5.10e-01 5.11e-01         0.7380
+ 0.00e+00 0.00e+00 1.11e-01 3.35e-01         0.7380
+ 4.10e+01 4.20e+01 4.60e+01 5.00e+01         0.8010
+ 0.00e+00 0.00e+00 7.55e-04 3.00e-03         0.8010
+ 0.00e+00 0.00e+00 2.73e-02 1.12e-01         0.8010
+ 9.73e-01 1.00e+00 1.00e+00 1.00e+00         0.8010
+ 5.07e-01 5.10e-01 5.11e-01 5.11e-01         0.8010
+ 0.00e+00 0.00e+00 5.37e-02 2.21e-01         0.8010
+ mouse       tree           prior_T          quantity     q2.5      q10
+ joint point_tree         T_5_to_50                 T 19.10000 22.70000
+ joint point_tree         T_5_to_50         move_rate  0.00577  0.00648
+ joint point_tree         T_5_to_50 moves_per_lineage  0.24600  0.29600
+ joint point_tree         T_5_to_50     p_never_moved  0.44300  0.53200
+ joint point_tree         T_5_to_50     years_since_T  0.51800  0.51900
+ joint point_tree         T_5_to_50    moves_per_year  0.47700  0.56700
+ joint point_tree calibrated_scaled                 T 36.80000 37.60000
+ joint point_tree calibrated_scaled         move_rate  0.00115  0.00258
+ joint point_tree calibrated_scaled moves_per_lineage  0.03180  0.07330
+ joint point_tree calibrated_scaled     p_never_moved  0.00335  0.57200
+ joint point_tree calibrated_scaled     years_since_T  0.50100  0.50300
+ joint point_tree calibrated_scaled    moves_per_year  0.06310  0.14400
+      q50     q90   q97.5 P_no_migration
+ 25.50000 28.0000 29.0000              0
+  0.00915  0.0129  0.0163              0
+  0.42500  0.6320  0.8150              0
+  0.65400  0.7440  0.7820              0
+  0.52100  0.5240  0.5270              0
+  0.81300  1.2100  1.5500              0
+ 39.30000 44.6000 47.1000              0
+  0.00648  0.0183  0.2050              0
+  0.20900  0.5590  5.7000              0
+  0.81200  0.9290  0.9690              0
+  0.50800  0.5100  0.5110              0
+  0.41000  1.1100 11.3000              0
+  mouse  T age_unscaled_days age_scaled_days P_no_migration moves_q2.5
+ MD7634  5               -15             -15          0.000     1.6200
+ MD7634 10               -13             -14          0.000     1.3600
+ MD7634 15               -11             -13          0.000     0.8070
+ MD7634 20               -10             -11          0.000     0.5990
+ MD7634 25                -8             -10          0.000     0.4970
+ MD7634 30                -6              -9          0.000     0.4590
+ MD7634 35                -5              -7          0.000     0.4220
+ MD7634 40                -3              -6          0.000     0.3840
+ MD7634 45                -1              -5          0.000     0.2460
+ MD7634 50                15              -3          0.000     0.1100
+ MD7634 55                55              -2          0.000     0.0272
+ MD7634 60                95              -1          0.000     0.0331
+ MD7635  5               -15             -15          0.000     0.7910
+ MD7635 10               -13             -14          0.000     0.7380
+ MD7635 15               -11             -12          0.000     0.5440
+ MD7635 20               -10             -10          0.000     0.2510
+ MD7635 25                -8              -9          0.000     0.1450
+ MD7635 30                -6              -7          0.000     0.0467
+ MD7635 35                -5              -6          0.000     0.0133
+ MD7635 40                -3              -4          0.802     0.0000
+ MD7635 45                -1              -3          0.787     0.0000
+ MD7635 50                15              -1          0.745     0.0000
+ MD7635 55                55               8          0.693     0.0000
+ MD7635 60                95              44          0.664     0.0000
+ moves_median moves_q97.5 max_loglik
+       14.500     182.000       -213
+       10.800     172.000       -212
+        3.210     161.000       -212
+        1.340     134.000       -211
+        0.991     111.000       -210
+        0.916     103.000       -211
+        1.190     106.000       -211
+        2.720     108.000       -212
+        3.470      97.700       -213
+        1.550      87.200       -212
+        0.860      68.300       -212
+        2.630      66.100       -213
+        1.580      99.600       -150
+        1.310      82.800       -150
+        0.967      48.500       -150
+        0.562       2.820       -149
+        0.325       0.727       -146
+        0.166       0.467       -143
+        0.094       0.334       -144
+        0.000       0.105       -146
+        0.000       0.129       -148
+        0.000       0.247       -149
+        0.000       0.916       -151
+        0.000       2.890       -151
+Warning messages:
+1: The following aesthetics were dropped during statistical transformation: fill.
+ℹ This can happen when ggplot fails to infer the correct grouping structure in
+  the data.
+ℹ Did you forget to specify a `group` aesthetic or to convert a numerical
+  variable into a factor? 
+2: The following aesthetics were dropped during statistical transformation: fill.
+ℹ This can happen when ggplot fails to infer the correct grouping structure in
+  the data.
+ℹ Did you forget to specify a `group` aesthetic or to convert a numerical
+  variable into a factor? 
+Warning message:
+In scale_y_log10() : log-10 transformation introduced infinite values.
+null device 
+          1 
+ T_true moves_true T_median T_cover95 moves_median moves_cover95
+     10        0.0     10.0     1.000       0.0000         1.000
+     10        0.1     10.0     0.975       0.1070         0.975
+     10        0.3     10.0     0.975       0.3360         0.925
+     10        1.0     26.5     0.925       0.9780         0.925
+     20        0.0     20.0     1.000       0.0000         1.000
+     20        0.1     20.0     1.000       0.0877         0.925
+     20        0.3     20.0     0.975       0.3100         0.925
+     20        1.0     29.0     0.975       1.4400         0.875
+     35        0.0     35.0     0.950       0.0000         1.000
+     35        0.1     35.0     0.975       0.0834         0.875
+     35        0.3     35.0     0.975       0.2830         0.950
+     35        1.0     30.0     1.000       2.6900         0.875
+ mean_P_no_migration
+            9.89e-01
+            1.52e-15
+            6.26e-15
+            0.00e+00
+            9.83e-01
+            1.93e-05
+            2.22e-08
+            0.00e+00
+            9.45e-01
+            7.63e-02
+            1.90e-02
+            0.00e+00
+MD7634 : best T with no migration = 80 
+MD7635 : best T with no migration = 39 
+Warning messages:
+1: Removed 112 rows containing missing values or values outside the scale range
+(`geom_ribbon()`). 
+2: Removed 112 rows containing missing values or values outside the scale range
+(`geom_line()`). 
+3: Removed 40 rows containing missing values or values outside the scale range
+(`geom_point()`). 
+null device 
+          1 
