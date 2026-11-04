@@ -16,12 +16,14 @@ simulate_states_multi=function(pt,T,mu,n_rep,pi=pt$pi_obs){
   st[1:pt$n_tip,,drop=FALSE]
 }
 
-#Clade membership of each tip for each cut-off: clades = branches crossing the cut-off with > 1 descendant tip
-#(the same clades as get_expanded_clade_nodes(..., min_clonal_fraction=0, min_samples=1) %>% filter(n_samples>1))
+#Clade membership of each tip for each cut-off: clades = all branches crossing the cut-off, including single colonies
+#(the same clades as get_expanded_clade_nodes(..., min_clonal_fraction=0, min_samples=1) in Mouse_phylo_clustering.Rmd).
+#Every tip is then in exactly one clade, so the clade x bone table partitions all colonies. (Before 2026-11-03 single
+#colonies were left out; see archive/abc_R_before_singletons.R.)
 clade_index=function(pt,cuts){
   tr=pt$tree; hp=pt$h[tr$edge[,1]]; hc=pt$h[tr$edge[,2]]
   lapply(cuts,function(h){
-    nodes=tr$edge[hp<h&hc>=h,2]; nodes=nodes[nodes>pt$n_tip]  #internal nodes only = clades with > 1 tip
+    nodes=tr$edge[hp<h&hc>=h,2]
     id=rep(NA_integer_,pt$n_tip)
     for(k in seq_along(nodes)) id[match(getTips(tr,nodes[k]),tr$tip.label)]=k
     id})

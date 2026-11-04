@@ -19,12 +19,16 @@ Panel numbers follow the manuscript draft of 2026-10-31. MD7634 = mouse 1, MD763
 Migration model (`migration_model/`):
 
 - `trees_prior_range_T.pdf`: both trees with the 20-70 prior range of T shaded.
-- `heatmap_<MD7634|MD7635|joint>.pdf`: posterior over T x migration rate (joint and given T), with the marginal posterior
-  of T and P(no migration | T); colonisation windows marked.
+- `heatmap_<MD7634|MD7635|joint>.pdf` (panels A-B): posterior over T x migration rate (joint and given T), with the
+  marginal posteriors of T (below) and of the rate (beside the joint posterior, with P(no migration)); colonisation
+  windows marked.
 - `ridges_<MD7634|MD7635|joint>.pdf`: migration rate given T, slices at T = 20, 25, ..., 70.
-- `relative_likelihood_colonisation_window.pdf`: prior-free relative likelihood of the rate, T in the colonisation
-  window (supports "excluded rates above ~0.2 moves per year" for mouse 2).
-- `heatmap_*_synthetic_likelihood.pdf`, `ridges_*_synthetic_likelihood.pdf`: the same fits using only the chi-squared
-  statistics ("fitting the model only to the chi-squared statistics gave consistent results").
-- `posterior_predictive_chisq_curve.pdf`: observed chi-squared curve vs simulations from each posterior.
+- `marginal_migration_rate.pdf` (panel E): posterior of the migration rate for mouse 1, mouse 2 and the joint fit,
+  averaged over T, with the posterior probability of no migration as a bar at 0 and in the panel titles.
+- `relative_likelihood_colonisation_window.pdf`: relative likelihood of the rate for T in the colonisation window (no
+  longer in the figure; the text no longer conditions on the colonisation window).
+- `posterior_predictive_chisq_curve.pdf` (panel F): observed chi-squared curve (all lineages, single colonies
+  included) vs simulations from the posterior and with no clustering.
+- The synthetic-likelihood (chi-squared only) fits were dropped on 2026-11-03; old PDFs in
+  `../archive/synthetic_likelihood_plots/`.
 - `posterior_predictive_same_bone_pairs.pdf`: observed vs simulated same-bone fraction of colony pairs.

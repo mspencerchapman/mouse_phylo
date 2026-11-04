@@ -462,14 +462,18 @@ legend("topleft", inset=c(.01,.01), title="Sample type",
        names(cell_type_colours), fill=cell_type_colours, horiz=F, cex=0.7)
 save_base_plot(paste0(sample_ID,"_tree_corrected_ultrametric"),width=10,height=5)
 
-#Clade x tissue contingency test at each molecular-time cut-off: does tissue composition differ between the clades
-#(of >1 sample) crossing that height? Monte Carlo p-values because the tables are sparse; NA if < 2 clades
+#Clade x tissue contingency test at each molecular-time cut-off: does tissue composition differ between the lineages
+#crossing that height? All lineages are included, single colonies too, so the table partitions all colonies and the
+#Monte Carlo p-value (margins fixed) is a permutation test of bone labels across colonies. With the margins fixed the
+#single colonies only add a constant to the statistic, which is a weighted count of different-bone pairs within clades.
+#Excluding them (as before 2026-11-03) only compared clades with each other, missing clades that all share the same
+#bone bias. NA if < 2 lineages
 set.seed(1)
 cutoff_vec<-seq(1,60,1)
 tissues<-sample_level_metadata%>%filter(INTERNAL_CASM_SAMPLE_NAME%in%tree.ultra$tip.label)%>%pull(TISSUE_PHENOTYPE)%>%unique()
 chisq.res<-lapply(cutoff_vec,function(height) {
   clades_df<-get_expanded_clade_nodes(tree=tree.ultra, height_cut_off = height,min_clonal_fraction = 0,min_samples = 1)
-  clade_nodes<-clades_df%>%filter(n_samples>1)%>%pull(nodes)
+  clade_nodes<-clades_df%>%filter(n_samples>0)%>%pull(nodes)
   if(length(clade_nodes)<2) return(list(p.value=NA,n_clades=length(clade_nodes)))
   
   #Create the anatomy matrix (clades x tissues)
@@ -500,6 +504,37 @@ chisq_by_moltime_plot<-chisq_df%>%filter(!is.na(chisq.p.value))%>%
   my_theme
 chisq_by_moltime_plot
 save_gg(chisq_by_moltime_plot,paste0(sample_ID,"_chisq_by_moltime_plot"),width=3,height=2)
+```
+
+```{r chisq_global_test}
+#One test across cut-offs (the per-cut-off p-values above are not corrected for testing many nested cut-offs).
+#Statistic: the smallest per-cut-off tail probability over cut-offs 5-55 (step 5). Null: bone labels permuted across
+#colonies (the same null as the per-cut-off Monte Carlo test); per-cut-off tail probabilities and the distribution of
+#the minimum are both taken from the same 2000 permutations.
+set.seed(20261103)
+global_cuts<-seq(5,55,5)
+tip_bone<-setNames(sample_level_metadata$TISSUE_PHENOTYPE,sample_level_metadata$INTERNAL_CASM_SAMPLE_NAME)[tree.ultra$tip.label]
+#Lineage of each colony at each cut-off (all lineages crossing the cut-off, as above)
+lineage_at<-lapply(global_cuts,function(height){
+  nodes<-get_expanded_clade_nodes(tree=tree.ultra,height_cut_off=height,min_clonal_fraction=0,min_samples=1)$nodes
+  id<-rep(NA_integer_,length(tip_bone))
+  for(k in seq_along(nodes)) id[match(getTips(tree.ultra,nodes[k]),tree.ultra$tip.label)]<-k
+  id})
+pearson_X2<-function(bone) sapply(lineage_at,function(id){
+  M<-table(id,factor(bone,levels=tissues)); M<-M[,colSums(M)>0,drop=F]
+  if(nrow(M)<2|ncol(M)<2) return(NA)
+  E<-outer(rowSums(M),colSums(M))/sum(M); sum((M-E)^2/E)})
+obs_X2<-pearson_X2(tip_bone)
+labelled<-!is.na(tip_bone)  #the zero-length "Ancestral" outgroup tip has no bone and is in no lineage
+null_X2<-t(replicate(2000,{b<-tip_bone; b[labelled]<-sample(b[labelled]); pearson_X2(b)}))
+tail_prob<-function(x) sapply(seq_along(global_cuts),function(i) mean(null_X2[,i]>=x[i]))
+use<-which(!is.na(obs_X2))
+obs_min<-min(tail_prob(obs_X2)[use])
+null_min<-apply(null_X2,1,function(x) min(tail_prob(x)[use]))
+global_chisq<-data.frame(sample_ID=sample_ID,cut_offs="5-55 (step 5)",smallest_tail_prob=obs_min,
+                         best_cut_off=global_cuts[use][which.min(tail_prob(obs_X2)[use])],
+                         global_p=(sum(null_min<=obs_min)+1)/(length(null_min)+1))  #(k+1)/(n+1): never 0
+global_chisq
 ```
 
 

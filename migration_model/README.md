@@ -41,11 +41,12 @@ It also acknowledges that localisation is protracted, so the inferred migration 
 bone-to-bone migration. The calibrated-window results below came from `run_migration.R` and are superseded by the broad
 prior in the Rmd.
 
-Simulation-based section (added 2026-10-30). The model is fitted to the clade x bone chi-squared curve (cut-offs
-10-50) by **synthetic likelihood** on a grid (`R/abc.R`; reference tables cached in `results/abc_reference_<mouse>.Rds`,
-1,000 simulations per cell). Kernel ABC (rejection-style) is also included but was nearly uninformative, because a
-single distance scale does not suit cells with very different noise. A relative-likelihood plot gives prior-free
-statements about high migration rates.
+Simulation-based section (added 2026-10-30, removed 2026-11-03). The model was also fitted to the clade x bone
+chi-squared curve alone by synthetic likelihood (`R/abc.R`). Once single-colony lineages were included in the statistic
+(matching Figure 1D-E) that fit became much less informative, so it was dropped; the old Rmd is in
+`archive/Migration_model_before_removing_synthetic_likelihood.Rmd`. The Rmd still uses `clade_index()` and
+`chisq_stats()` from `R/abc.R` for the posterior predictive check of the chi-squared curve; the cached reference tables
+in `results/abc_reference_*.Rds` are no longer used.
 
 ## Script
 
